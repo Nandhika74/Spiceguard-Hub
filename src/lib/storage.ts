@@ -1,4 +1,4 @@
-import { getSupabaseClient } from './supabase';
+import { getSupabaseClient, getSupabaseCredentials } from './supabase';
 
 export const DOCUMENTS_BUCKET = 'spiceguard-documents';
 
@@ -6,14 +6,14 @@ function isApplicationUrl(value: string): boolean {
   if (typeof window === 'undefined') return false;
 
   try {
-    const url = new URL(value, window.location.origin);
-    return url.origin === window.location.origin;
+    const url = new URL(value);
+    return /^https?:$/.test(url.protocol) && url.origin === window.location.origin;
   } catch {
     return false;
   }
 }
 
-function getStoragePath(value: string): string | null {
+export function getDocumentStoragePath(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed || isApplicationUrl(trimmed)) return null;
 
@@ -35,7 +35,11 @@ export async function getSignedDocumentUrl(fileUrl: string): Promise<string> {
     throw new Error('This document does not have a file path.');
   }
 
-  const storagePath = getStoragePath(source);
+  const storagePath = getDocumentStoragePath(source);
+  console.debug('[DocumentPreview] storage path', {
+    fileUrl: source,
+    storagePath,
+  });
   if (!storagePath) {
     if (isApplicationUrl(source)) {
       throw new Error('The saved document URL points to the application, not a document.');
@@ -69,6 +73,26 @@ export async function getSignedDocumentUrl(fileUrl: string): Promise<string> {
   }
   if (!data?.signedUrl) {
     throw new Error('Supabase returned no document preview URL.');
+  }
+
+  try {
+    const safeSignedUrl = new URL(data.signedUrl);
+    const { url: supabaseUrl } = getSupabaseCredentials();
+    const expectedOrigin = new URL(supabaseUrl).origin;
+    if (
+      safeSignedUrl.origin !== expectedOrigin ||
+      !safeSignedUrl.pathname.includes(`/storage/v1/object/sign/${DOCUMENTS_BUCKET}/`)
+    ) {
+      throw new Error('Supabase returned an invalid document preview URL.');
+    }
+    console.debug('[DocumentPreview] resolved signed URL', {
+      signedUrl: `${safeSignedUrl.origin}${safeSignedUrl.pathname}`,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Supabase returned an invalid document preview URL.') {
+      throw error;
+    }
+    throw new Error('Supabase returned an invalid document preview URL.');
   }
 
   return data.signedUrl;

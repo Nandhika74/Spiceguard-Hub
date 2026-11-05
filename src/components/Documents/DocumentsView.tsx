@@ -30,6 +30,16 @@ export const DocumentsView: React.FC = () => {
   const [previewDoc, setPreviewDoc] = useState<DocumentItem | null>(null);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
 
+  const openPreview = (document: DocumentItem) => {
+    console.debug('[DocumentPreview] opening document', {
+      documentId: document.id,
+      fileName: document.file_name,
+      fileUrl: document.file_url,
+      mimeType: document.file_type,
+    });
+    setPreviewDoc(document);
+  };
+
   useEffect(() => {
     if (!activeMenuId) return;
     const handleOutsideClick = () => setActiveMenuId(null);
@@ -165,7 +175,7 @@ export const DocumentsView: React.FC = () => {
                           <button
                             onClick={() => {
                               setActiveMenuId(null);
-                              setPreviewDoc(doc);
+                              openPreview(doc);
                             }}
                             className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2"
                           >
@@ -214,7 +224,7 @@ export const DocumentsView: React.FC = () => {
                   {/* Title & Snippet */}
                   <div className="mt-3 space-y-1">
                     <h3
-                      onClick={() => setPreviewDoc(doc)}
+                      onClick={() => openPreview(doc)}
                       className="text-xs font-bold text-stone-900 cursor-pointer hover:text-[#164E33] truncate"
                     >
                       {doc.title}
@@ -254,7 +264,7 @@ export const DocumentsView: React.FC = () => {
                 </div>
                 <div className="min-w-0">
                   <p
-                    onClick={() => setPreviewDoc(doc)}
+                    onClick={() => openPreview(doc)}
                     className="text-xs font-bold text-stone-900 cursor-pointer hover:text-[#164E33] truncate"
                   >
                     {doc.title}

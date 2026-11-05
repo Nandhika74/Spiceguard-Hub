@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { DocumentItem } from '../../types';
 import { formatDate } from '../../lib/dateUtils';
-import { getSignedDocumentUrl } from '../../lib/storage';
+import { getDocumentStoragePath, getSignedDocumentUrl } from '../../lib/storage';
 import { FileText, Download, X, Loader2, AlertCircle } from 'lucide-react';
 
 interface DocumentPreviewModalProps {
@@ -21,6 +21,12 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({ docu
     setPreviewUrl(null);
     setError(null);
     setLoading(true);
+    console.debug('[DocumentPreview] requested document', {
+      documentId: document.id,
+      fileName: document.file_name,
+      storagePath: getDocumentStoragePath(document.file_url),
+      mimeType: document.file_type,
+    });
     const timeoutId = window.setTimeout(() => {
       if (!cancelled) {
         setLoading(false);
@@ -34,6 +40,18 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({ docu
         window.clearTimeout(timeoutId);
         setLoading(false);
         setPreviewUrl(url);
+        console.debug('[DocumentPreview] detected preview type', {
+          documentId: document.id,
+          mimeType: document.file_type,
+          previewUrl: (() => {
+            try {
+              const safeUrl = new URL(url);
+              return `${safeUrl.origin}${safeUrl.pathname}`;
+            } catch {
+              return 'invalid-url';
+            }
+          })(),
+        });
       })
       .catch((previewError: unknown) => {
         if (cancelled) return;
