@@ -19,6 +19,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [connectionModalOpen, setConnectionModalOpen] = useState(false);
+  const [connectionInitialTab, setConnectionInitialTab] = useState<'connection' | 'import'>('connection');
 
   if (authStatus === 'loading') {
     return (
@@ -34,7 +35,16 @@ export default function App() {
   if (authStatus === 'unauthenticated') {
     return (
       <div className="min-h-screen bg-[#F5F7F4]">
-        <AuthModal isOpen={true} onClose={() => {}} requireAuth={true} />
+        <AuthModal
+          isOpen={true}
+          onClose={() => {}}
+          requireAuth={true}
+          onOpenConnection={() => setConnectionModalOpen(true)}
+        />
+        <ConnectionModal
+          isOpen={connectionModalOpen}
+          onClose={() => setConnectionModalOpen(false)}
+        />
       </div>
     );
   }
@@ -57,7 +67,10 @@ export default function App() {
         <Header
           activeTab={activeTab}
           onOpenAuth={() => setAuthModalOpen(true)}
-          onOpenConnection={() => setConnectionModalOpen(true)}
+          onOpenConnection={() => {
+            setConnectionInitialTab('connection');
+            setConnectionModalOpen(true);
+          }}
         />
 
         {dbError && (
@@ -105,11 +118,20 @@ export default function App() {
       <UndoToast />
 
       {/* Modals */}
-      <AuthModal isOpen={authModalOpen} onClose={() => setAuthModalOpen(false)} />
+      <AuthModal
+        isOpen={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        onOpenConnection={() => {
+          setAuthModalOpen(false);
+          setConnectionInitialTab('connection');
+          setConnectionModalOpen(true);
+        }}
+      />
 
       <ConnectionModal
         isOpen={connectionModalOpen}
         onClose={() => setConnectionModalOpen(false)}
+        initialTab={connectionInitialTab}
       />
     </div>
   );

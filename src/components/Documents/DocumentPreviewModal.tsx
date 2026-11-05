@@ -1,8 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { DocumentItem } from '../../types';
 import { formatDate } from '../../lib/dateUtils';
-import { getDocumentStoragePath, getSignedDocumentUrl } from '../../lib/storage';
-import { FileText, Download, X, Loader2, AlertCircle } from 'lucide-react';
+import { isBlobUrl, getSignedDocumentUrl, downloadDocumentBlob } from '../../lib/storage';
+import { FileText, Download, ExternalLink, X, AlertCircle } from 'lucide-react';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 interface DocumentPreviewModalProps {
   document: DocumentItem | null;
@@ -10,77 +14,159 @@ interface DocumentPreviewModalProps {
 }
 
 export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({ document, onClose }) => {
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  const [imageBlobUrl, setImageBlobUrl] = useState<string | null>(null);
+  const [pdfBuffer, setPdfBuffer] = useState<ArrayBuffer | null>(null);
+  const [numPages, setNumPages] = useState<number>(0);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const pdfContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const fileNameOrUrl = (document?.file_name || document?.file_url || '').toLowerCase();
+  const isUnsupportedBinaryOrCode = Boolean(
+    document &&
+      /\.(pkl|pickle|ipynb|csv|xlsx?|docx?|pptx?|zip|tar|gz|pt|pth|h5|onnx|bin)$/i.test(
+        document.file_name || ''
+      )
+  );
+
+  const isImage = Boolean(
+    document &&
+      !isUnsupportedBinaryOrCode &&
+      (document.file_type?.startsWith('image/') ||
+        /\.(png|jpe?g|webp|gif|svg)$/i.test(fileNameOrUrl))
+  );
+
+  const isPdf = Boolean(
+    document &&
+      !isUnsupportedBinaryOrCode &&
+      !isImage &&
+      (document.file_type === 'application/pdf' ||
+        /\.pdf$/i.test(document.file_name || '') ||
+        (document.file_url || '').toLowerCase().includes('.pdf'))
+  );
 
   useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
+
+    setSignedUrl(null);
+    setImageBlobUrl(null);
+    setPdfBuffer(null);
+    setNumPages(0);
+    setLoadError(null);
+
     if (!document) return;
-    let cancelled = false;
 
-    setPreviewUrl(null);
-    setError(null);
-    setLoading(true);
-    console.debug('[DocumentPreview] requested document', {
-      documentId: document.id,
-      fileName: document.file_name,
-      storagePath: getDocumentStoragePath(document.file_url),
-      mimeType: document.file_type,
-    });
-    const timeoutId = window.setTimeout(() => {
-      if (!cancelled) {
-        setLoading(false);
-        setError('The preview URL could not be retrieved. Download the file instead.');
-      }
-    }, 10000);
+    if (isBlobUrl(document.file_url)) {
+      setLoadError('Attachment needs to be re-uploaded. Temporary browser blob URLs are no longer valid.');
+      return;
+    }
 
-    void getSignedDocumentUrl(document.file_url)
-      .then((url) => {
-        if (cancelled) return;
-        window.clearTimeout(timeoutId);
-        setLoading(false);
-        setPreviewUrl(url);
-        console.debug('[DocumentPreview] detected preview type', {
-          documentId: document.id,
-          mimeType: document.file_type,
-          previewUrl: (() => {
-            try {
-              const safeUrl = new URL(url);
-              return `${safeUrl.origin}${safeUrl.pathname}`;
-            } catch {
-              return 'invalid-url';
-            }
-          })(),
-        });
-      })
-      .catch((previewError: unknown) => {
-        if (cancelled) return;
-        window.clearTimeout(timeoutId);
-        setLoading(false);
-        setError(
-          previewError instanceof Error
-            ? previewError.message
-            : 'The preview URL could not be retrieved. Download the file instead.'
+    setIsLoading(true);
+
+    const loadPreview = async () => {
+      try {
+        const dlUrl = await getSignedDocumentUrl(
+          document.file_url,
+          document.file_name || document.title
         );
-      });
+        if (active && dlUrl) {
+          setSignedUrl(dlUrl);
+        }
+
+        if (isPdf) {
+          if (!dlUrl) {
+            setLoadError('Unable to generate a signed URL for this PDF.');
+            return;
+          }
+          // Pass a non-download signed URL directly to PDF.js
+          const viewUrl = await getSignedDocumentUrl(document.file_url);
+          if (active) {
+            setSignedUrl(viewUrl || dlUrl);
+            setPdfBuffer(new ArrayBuffer(1)); // trigger renderPdf with viewUrl
+          }
+        } else if (isImage) {
+          const { blob, error } = await downloadDocumentBlob(document.file_url);
+          if (!active) return;
+          if (error || !blob) {
+            setLoadError(error || 'Unable to load image from storage. Please use the Download button.');
+            return;
+          }
+          const mimeType = document.file_type || blob.type || 'image/png';
+          objectUrl = URL.createObjectURL(new Blob([blob], { type: mimeType }));
+          if (active) setImageBlobUrl(objectUrl);
+        } else if (!dlUrl) {
+          setLoadError('Unable to access this file. It may be missing or inaccessible.');
+        }
+      } catch {
+        if (active) {
+          setLoadError('Unable to load inline preview. Please use the Download button.');
+        }
+      } finally {
+        if (active) setIsLoading(false);
+      }
+    };
+
+    loadPreview();
 
     return () => {
-      cancelled = true;
-      window.clearTimeout(timeoutId);
+      active = false;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
     };
-  }, [document]);
+  }, [document, isPdf, isImage]);
+
+  // Render PDF pages onto canvases using PDF.js (no iframe, never blocked by Chrome)
+  useEffect(() => {
+    let cancelled = false;
+    if (!isPdf || !signedUrl || !pdfContainerRef.current) return;
+
+    const container = pdfContainerRef.current;
+    container.innerHTML = '';
+
+    const renderPdf = async () => {
+      try {
+        const loadingTask = pdfjsLib.getDocument({ url: signedUrl });
+        const pdf = await loadingTask.promise;
+
+        if (cancelled) return;
+        setNumPages(pdf.numPages);
+
+        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+          if (cancelled) return;
+          const page = await pdf.getPage(pageNum);
+          const viewport = page.getViewport({ scale: 1.4 });
+          const canvas = window.document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          if (!context) {
+            throw new Error(`Could not acquire 2D canvas context for page ${pageNum}.`);
+          }
+
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+          canvas.className = 'w-full max-w-2xl rounded-xl shadow-md bg-white mx-auto block';
+
+          container.appendChild(canvas);
+          await page.render({ canvasContext: context, canvas, viewport }).promise;
+        }
+      } catch (err: any) {
+        console.warn('PDF.js render warning:', err?.message || err);
+        if (!cancelled) {
+          const detail = err?.message ? ` (${err.message})` : '';
+          setLoadError(`Failed to render PDF${detail}. Please use the Download button.`);
+        }
+      }
+    };
+
+    renderPdf();
+    return () => {
+      cancelled = true;
+    };
+  }, [isPdf, signedUrl]);
 
   if (!document) return null;
-
-  const fileUrl = previewUrl;
-  const isImage =
-    document.file_type?.startsWith('image/') ||
-    /\.(png|jpe?g|webp|gif|svg)$/i.test(document.file_name || '');
-
-  const isPdf =
-    document.file_type === 'application/pdf' ||
-    /\.pdf$/i.test(document.file_name || '') ||
-    /\.pdf$/i.test(document.file_url || '');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs animate-fadeIn">
@@ -97,135 +183,76 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({ docu
               </h3>
               <p className="text-xs text-stone-400">
                 Uploaded by {document.uploaded_by_name} • {formatDate(document.created_at)}
+                {numPages > 0 ? ` • ${numPages} page${numPages > 1 ? 's' : ''}` : ''}
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <a
-              href={fileUrl || undefined}
-              download={document.file_name || 'spiceguard-doc'}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-800 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs transition"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Download</span>
-            </a>
+            {signedUrl && (
+              <a
+                href={signedUrl}
+                download={document.file_name || 'spiceguard-doc'}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-800 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs transition"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download</span>
+              </a>
+            )}
             <button onClick={onClose} className="text-stone-400 hover:text-white p-1">
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
-        {/* Content Preview */}
-        <div className="flex-1 overflow-y-auto p-5 bg-stone-100 flex items-center justify-center min-h-[300px]">
-          {loading ? (
-            <div className="flex flex-col items-center gap-3 text-stone-600">
-              <Loader2 className="w-8 h-8 animate-spin text-[#164E33]" />
-              <p className="text-sm font-semibold">Preparing preview...</p>
+        {/* Preview Body */}
+        <div className="flex-1 overflow-y-auto p-5 bg-stone-100 flex items-center justify-center min-h-[360px]">
+          {isLoading ? (
+            <div className="text-center space-y-2">
+              <div className="w-7 h-7 border-2 border-emerald-800 border-t-transparent rounded-full animate-spin mx-auto" />
+              <p className="text-xs text-stone-600 font-medium">Generating secure preview...</p>
             </div>
-          ) : error ? (
-            <div className="p-8 rounded-2xl bg-white border border-red-200 text-center max-w-md space-y-3 shadow-sm">
-              <AlertCircle className="w-8 h-8 mx-auto text-red-500" />
-              <p className="text-sm font-semibold text-stone-900">{error}</p>
-              <a href={fileUrl || undefined} download={document.file_name || 'spiceguard-doc'} className="inline-flex items-center gap-2 rounded-xl bg-emerald-900 px-4 py-2 text-xs font-bold text-white">
-                <Download className="w-3.5 h-3.5" /> Download
-              </a>
-            </div>
-          ) : isImage && fileUrl ? (
-            <div className="max-w-full max-h-[60vh] flex flex-col items-center">
-              <img
-                src={fileUrl}
-                onError={() => setError('This image could not be loaded. Download the file instead.')}
-                alt={document.title}
-                className="max-h-[55vh] object-contain rounded-2xl shadow-md border border-stone-300"
-              />
-            </div>
-          ) : isPdf && fileUrl ? (
-            <div className="w-full h-[65vh] rounded-2xl overflow-hidden border border-stone-300 bg-white shadow-inner">
-              <iframe
-                src={`${fileUrl}#toolbar=0`}
-                title={document.title}
-                className="w-full h-full border-0"
-              />
-            </div>
-          ) : (
-            <div className="p-8 rounded-2xl bg-white border border-stone-200 text-center max-w-md space-y-3 shadow-sm">
-              <div className="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-800 flex items-center justify-center mx-auto font-black text-lg">
-                {document.file_name?.split('.').pop()?.toUpperCase() || 'DOC'}
+          ) : loadError ? (
+            <div className="max-w-md p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-semibold text-amber-950">Preview Unavailable</p>
+                <p className="mt-0.5">{loadError}</p>
               </div>
-              <h4 className="text-sm font-bold text-stone-900">{document.file_name || document.title}</h4>
-              <p className="text-xs text-stone-500 leading-relaxed">
-                {document.description || 'Raw technical document, jupyter notebook, or dataset file.'}
-              </p>
+            </div>
+          ) : isImage && imageBlobUrl ? (
+            <img
+              src={imageBlobUrl}
+              alt={document.title}
+              className="max-h-[65vh] max-w-full rounded-xl shadow-md object-contain"
+            />
+          ) : isPdf && pdfBuffer ? (
+            <div ref={pdfContainerRef} className="w-full space-y-4 self-start" />
+          ) : signedUrl ? (
+            <div className="text-center space-y-3 p-6 bg-white rounded-2xl border border-stone-200 max-w-md">
+              <FileText className="w-10 h-10 text-emerald-800 mx-auto" />
+              <div>
+                <p className="text-sm font-bold text-stone-900">
+                  {document.file_name || document.title}
+                </p>
+                <p className="text-xs text-stone-500 mt-1">
+                  Inline preview is not supported for this file type. Use the button below to download or open it.
+                </p>
+              </div>
               <a
-                href={fileUrl || undefined}
+                href={signedUrl}
+                download={document.file_name || 'spiceguard-doc'}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-900 hover:bg-emerald-800 text-white text-xs font-bold shadow-xs transition"
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-900 hover:bg-emerald-800 text-white text-xs font-semibold shadow-xs transition"
               >
-                <span>Download file</span>
-                <Download className="w-3.5 h-3.5" />
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Download File</span>
               </a>
             </div>
-          )}
-        </div>
-
-        {/* Attached Files List if multiple files exist */}
-        {document.attachments && document.attachments.length > 0 && (
-          <div className="px-5 py-3 bg-stone-50 border-t border-stone-200">
-            <p className="text-[11px] font-bold text-stone-700 uppercase tracking-wider mb-2">
-              Attached Files ({document.attachments.length})
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {document.attachments.map((file, i) => (
-                <div
-                  key={i}
-                  className="flex items-center justify-between p-2 rounded-xl bg-white border border-stone-200 text-xs"
-                >
-                  <div className="flex items-center gap-2 truncate">
-                    <FileText className="w-3.5 h-3.5 text-[#164E33] shrink-0" />
-                    <span className="font-semibold text-stone-800 truncate">{file.name}</span>
-                    {file.size && (
-                      <span className="text-[10px] text-stone-400 shrink-0">
-                        ({(file.size / 1024).toFixed(0)} KB)
-                      </span>
-                    )}
-                  </div>
-                  <a
-                    href={file.url}
-                    download={file.name}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="p-1 text-stone-400 hover:text-[#164E33] transition"
-                    title="Download file"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                  </a>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Footer Meta */}
-        <div className="p-4 bg-white border-t border-stone-200 flex items-center justify-between text-xs text-stone-600 shrink-0 flex-wrap gap-2">
-          <div className="flex items-center gap-2">
-            <span className="font-bold text-[#164E33] bg-[#EAF3EB] px-2 py-0.5 rounded">
-              {document.category}
-            </span>
-            {document.tags.map((tag, i) => (
-              <span key={i} className="text-[11px] bg-stone-100 text-stone-600 px-2 py-0.5 rounded-full">
-                #{tag}
-              </span>
-            ))}
-          </div>
-          {document.file_size && (
-            <span className="text-[11px] text-stone-400">
-              Size: {(document.file_size / (1024 * 1024)).toFixed(2)} MB
-            </span>
-          )}
+          ) : null}
         </div>
       </div>
     </div>

@@ -243,51 +243,93 @@ class RealtimeStore {
     this.notify();
   }
 
-  public updateMemberProfile(
-    id: string,
-    updates: Pick<Member, 'full_name' | 'role'>
-  ): { success: boolean; message: string } {
-    const existing = this.state.teamMembers.find((member) => member.id === id);
-    if (!existing) return { success: false, message: 'Team member not found.' };
+  private resolveMemberDisplayName(email: string, dbFullName?: string | null): string {
+    const trimmed = (dbFullName || '').trim();
+    const emailPrefix = email.split('@')[0].toLowerCase();
+    if (!trimmed || trimmed.toLowerCase() === emailPrefix) {
+      const seedMatch = SEED_MEMBERS.find(
+        (m) => m.email.toLowerCase() === email.toLowerCase()
+      );
+      if (seedMatch) {
+        return seedMatch.full_name;
+      }
+    }
+    return trimmed || email.split('@')[0];
+  }
 
-    const fullName = updates.full_name.trim();
-    const role = updates.role.trim() as MemberRole;
-    if (!fullName || !role) {
-      return { success: false, message: 'Name and job title are required.' };
+  private handleProfileRealtime(payload: any): void {
+    const updated = payload?.new;
+    if (!updated || !updated.id) return;
+    const resolvedName = this.resolveMemberDisplayName(updated.email || '', updated.full_name);
+    let changed = false;
+    this.state.teamMembers = this.state.teamMembers.map((m) => {
+      if (m.id === updated.id) {
+        changed = true;
+        return {
+          ...m,
+          full_name: resolvedName,
+          avatar_color: updated.avatar_color ?? m.avatar_color,
+          role: (updated.role as MemberRole) ?? m.role,
+          is_team_lead:
+            updated.is_team_lead !== undefined ? Boolean(updated.is_team_lead) : m.is_team_lead,
+        };
+      }
+      return m;
+    });
+    if (this.state.currentUser.id === updated.id) {
+      changed = true;
+      this.state.currentUser = {
+        ...this.state.currentUser,
+        full_name: resolvedName,
+        avatar_color: updated.avatar_color ?? this.state.currentUser.avatar_color,
+        role: (updated.role as MemberRole) ?? this.state.currentUser.role,
+        is_team_lead:
+          updated.is_team_lead !== undefined
+            ? Boolean(updated.is_team_lead)
+            : this.state.currentUser.is_team_lead,
+      };
+    }
+    if (changed) {
+      this.notify();
+    }
+  }
+
+  public async updateMemberProfile(
+    memberId: string,
+    updates: { full_name: string; avatar_color: string }
+  ): Promise<{ success: boolean; message: string }> {
+    const cleanName = updates.full_name.trim();
+    if (!cleanName) {
+      return { success: false, message: 'Full name cannot be empty.' };
     }
 
     const supabase = getSupabaseClient();
-    if (supabase && id !== this.state.currentUser.id) {
-      return {
-        success: false,
-        message: 'You can only edit your own profile.',
+    if (supabase) {
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          full_name: cleanName,
+          avatar_color: updates.avatar_color,
+        })
+        .eq('id', memberId);
+
+      if (error) {
+        return { success: false, message: error.message };
+      }
+    }
+
+    this.state.teamMembers = this.state.teamMembers.map((m) =>
+      m.id === memberId ? { ...m, full_name: cleanName, avatar_color: updates.avatar_color } : m
+    );
+    if (this.state.currentUser.id === memberId) {
+      this.state.currentUser = {
+        ...this.state.currentUser,
+        full_name: cleanName,
+        avatar_color: updates.avatar_color,
       };
     }
-
-    const updated = { ...existing, full_name: fullName, role };
-    this.state.teamMembers = this.state.teamMembers.map((member) =>
-      member.id === id ? updated : member
-    );
-    if (this.state.currentUser.id === id) {
-      this.state.currentUser = updated;
-    }
-
-    if (supabase) {
-      void supabase
-        .from('profiles')
-        .update({ full_name: fullName, role })
-        .eq('id', id)
-        .then(({ error }) => {
-          if (error) {
-            this.handleDbError(error, 'Update team member profile');
-            return;
-          }
-          this.notify();
-        });
-    }
-
     this.notify();
-    return { success: true, message: 'Team member updated.' };
+    return { success: true, message: 'Profile updated successfully.' };
   }
 
   private handleDbError(error: any, context: string): void {
@@ -478,17 +520,29 @@ class RealtimeStore {
       teamMembers = (profilesData || []).map((p: any) => ({
         id: p.id,
         email: p.email,
-        full_name: p.full_name,
+        full_name: this.resolveMemberDisplayName(p.email, p.full_name),
         role: p.role as MemberRole,
         avatar_color: p.avatar_color,
         is_team_lead: Boolean(p.is_team_lead),
       }));
     }
 
+    const resolvedCurrentName = this.resolveMemberDisplayName(profile.email, profile.full_name);
+    if (
+      resolvedCurrentName &&
+      (!profile.full_name ||
+        profile.full_name.trim().toLowerCase() === profile.email.split('@')[0].toLowerCase())
+    ) {
+      await supabase
+        .from('profiles')
+        .update({ full_name: resolvedCurrentName })
+        .eq('id', userId);
+    }
+
     this.state.currentUser = {
       id: profile.id,
       email: profile.email,
-      full_name: profile.full_name,
+      full_name: resolvedCurrentName,
       role: profile.role as MemberRole,
       avatar_color: profile.avatar_color,
       is_team_lead: Boolean(profile.is_team_lead),
@@ -537,7 +591,7 @@ class RealtimeStore {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'activity_log', filter }, (payload) => {
         this.handleActivityRealtime(payload);
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, (payload) => {
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, (payload) => {
         this.handleProfileRealtime(payload);
       })
       .subscribe((status) => {
@@ -707,26 +761,6 @@ class RealtimeStore {
       this.state.activityLog = [payload.new, ...this.state.activityLog.filter((a) => a.id !== payload.new.id)].slice(0, 100);
       this.notify();
     }
-  }
-
-  private handleProfileRealtime(payload: any): void {
-    if (payload.eventType === 'DELETE') return;
-
-    const profile = payload.new as Partial<Member> & { id: string };
-    const updatedMember: Member = {
-      ...(this.state.teamMembers.find((member) => member.id === profile.id) || SEED_MEMBERS.find((member) => member.id === profile.id) || this.state.currentUser),
-      ...profile,
-      role: profile.role as MemberRole,
-      is_team_lead: Boolean(profile.is_team_lead),
-    };
-
-    this.state.teamMembers = this.state.teamMembers.map((member) =>
-      member.id === updatedMember.id ? updatedMember : member
-    );
-    if (this.state.currentUser.id === updatedMember.id) {
-      this.state.currentUser = updatedMember;
-    }
-    this.notify();
   }
 
   // --- GETTERS ---
@@ -1566,49 +1600,72 @@ class RealtimeStore {
   }
 
   // --- DOCUMENTS CRUD ---
-  public addDocument(data: Omit<DocumentItem, 'id' | 'uploaded_by' | 'uploaded_by_name' | 'created_at' | 'updated_at'>): DocumentItem {
+  public async addDocument(
+    data: Omit<DocumentItem, 'id' | 'uploaded_by' | 'uploaded_by_name' | 'created_at' | 'updated_at'>
+  ): Promise<{ success: boolean; message?: string; document?: DocumentItem }> {
     const newDoc: DocumentItem = {
       ...data,
       id: 'doc-' + Date.now().toString(36) + Math.random().toString(36).substring(2, 5),
+      workspace_id: this.state.workspaceId || undefined,
       uploaded_by: this.state.currentUser.email,
+      uploaded_by_id: this.state.currentUser.id,
       uploaded_by_name: this.state.currentUser.full_name,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
 
-    this.state.documents = [newDoc, ...this.state.documents];
-    this.logActivity('UPLOAD', 'document', newDoc.id, `${this.state.currentUser.full_name} uploaded document "${newDoc.title}".`);
-
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase.from('documents').insert({
-        id: newDoc.id,
-        title: newDoc.title,
-        description: newDoc.description,
-        category: newDoc.category,
-        tags: newDoc.tags,
-        file_url: newDoc.file_url,
-        file_name: newDoc.file_name,
-        file_size: newDoc.file_size,
-        file_type: newDoc.file_type,
-        is_external_link: newDoc.is_external_link,
-        milestone_id: newDoc.milestone_id,
-        uploaded_by: newDoc.uploaded_by,
-        uploaded_by_name: newDoc.uploaded_by_name,
-      }).then();
+      if (!this.state.workspaceId) {
+        return { success: false, message: 'No active workspace selected.' };
+      }
+      const { error } = await supabase
+        .from('documents')
+        .insert({
+          id: newDoc.id,
+          workspace_id: this.state.workspaceId,
+          title: newDoc.title,
+          description: newDoc.description,
+          category: newDoc.category,
+          tags: newDoc.tags,
+          file_url: newDoc.file_url,
+          file_name: newDoc.file_name,
+          file_size: newDoc.file_size,
+          file_type: newDoc.file_type,
+          attachments: newDoc.attachments || [],
+          is_external_link: newDoc.is_external_link,
+          milestone_id: newDoc.milestone_id || null,
+          uploaded_by: newDoc.uploaded_by,
+          uploaded_by_id: this.state.currentUser.id,
+          uploaded_by_name: newDoc.uploaded_by_name,
+        });
+
+      if (error) {
+        this.handleDbError(error, 'Add document');
+        return { success: false, message: error.message };
+      }
     }
 
+    this.state.documents = [newDoc, ...this.state.documents.filter((d) => d.id !== newDoc.id)];
+    this.logActivity('UPLOAD', 'document', newDoc.id, `${this.state.currentUser.full_name} uploaded document "${newDoc.title}".`);
     this.notify();
-    return newDoc;
+    return { success: true, document: newDoc };
   }
 
-  public updateDocument(id: string, updates: Partial<DocumentItem>): { success: boolean; message: string } {
+  public async updateDocument(
+    id: string,
+    updates: Partial<DocumentItem>
+  ): Promise<{ success: boolean; message: string }> {
     const existing = this.state.documents.find((d) => d.id === id);
     if (!existing) return { success: false, message: 'Document not found.' };
 
-    const isUploader = existing.uploaded_by.toLowerCase() === this.state.currentUser.email.toLowerCase();
+    const isUploader =
+      existing.uploaded_by.toLowerCase() === this.state.currentUser.email.toLowerCase();
     if (!isUploader && !this.isCurrentUserTeamLead()) {
-      return { success: false, message: 'Permission denied: Only the uploader or Team Lead can edit this document.' };
+      return {
+        success: false,
+        message: 'Permission denied: Only the uploader or Team Lead can edit this document.',
+      };
     }
 
     const updated: DocumentItem = {
@@ -1617,21 +1674,39 @@ class RealtimeStore {
       updated_at: new Date().toISOString(),
     };
 
-    this.state.documents = this.state.documents.map((d) => (d.id === id ? updated : d));
-    this.logActivity('UPDATE', 'document', id, `${this.state.currentUser.full_name} updated document "${existing.title}".`);
-
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase.from('documents').update({
-        title: updated.title,
-        description: updated.description,
-        category: updated.category,
-        tags: updated.tags,
-        milestone_id: updated.milestone_id,
-        updated_at: updated.updated_at,
-      }).eq('id', id).then();
+      const { error } = await supabase
+        .from('documents')
+        .update({
+          title: updated.title,
+          description: updated.description,
+          category: updated.category,
+          tags: updated.tags,
+          file_url: updated.file_url,
+          file_name: updated.file_name,
+          file_size: updated.file_size,
+          file_type: updated.file_type,
+          attachments: updated.attachments || [],
+          is_external_link: updated.is_external_link,
+          milestone_id: updated.milestone_id || null,
+          updated_at: updated.updated_at,
+        })
+        .eq('id', id);
+
+      if (error) {
+        this.handleDbError(error, 'Update document');
+        return { success: false, message: error.message };
+      }
     }
 
+    this.state.documents = this.state.documents.map((d) => (d.id === id ? updated : d));
+    this.logActivity(
+      'UPDATE',
+      'document',
+      id,
+      `${this.state.currentUser.full_name} updated document "${updated.title}".`
+    );
     this.notify();
     return { success: true, message: 'Document updated.' };
   }

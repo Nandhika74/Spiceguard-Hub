@@ -151,7 +151,8 @@ export const DocumentsView: React.FC = () => {
             return (
               <div
                 key={doc.id}
-                className="rounded-2xl bg-white border border-stone-200/90 p-5 shadow-xs hover:shadow-md transition flex flex-col justify-between"
+                onClick={() => setPreviewDoc(doc)}
+                className="rounded-2xl bg-white border border-stone-200/90 p-5 shadow-xs hover:shadow-md hover:border-[#164E33]/40 transition cursor-pointer flex flex-col justify-between"
               >
                 <div>
                   {/* Top Icon & Options */}
@@ -234,11 +235,21 @@ export const DocumentsView: React.FC = () => {
                     </p>
                   </div>
 
-                  {/* Category Pill Tag matching Screenshot 2 */}
-                  <div className="mt-3">
+                  {/* Category & File Metadata */}
+                  <div className="mt-3 flex items-center gap-1.5 flex-wrap">
                     <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[#EAF3EB] text-[#1E5638]">
                       {doc.category}
                     </span>
+                    {doc.file_name && (
+                      <span className="text-[10px] font-medium text-stone-500 truncate max-w-[140px]">
+                        {doc.file_name}
+                      </span>
+                    )}
+                    {doc.file_size ? (
+                      <span className="text-[10px] text-stone-400">
+                        • {(doc.file_size / 1024).toFixed(0)} KB
+                      </span>
+                    ) : null}
                   </div>
                 </div>
 
@@ -256,7 +267,8 @@ export const DocumentsView: React.FC = () => {
           {filteredDocs.map((doc) => (
             <div
               key={doc.id}
-              className="p-4 flex items-center justify-between gap-3 hover:bg-stone-50/60 transition"
+              onClick={() => setPreviewDoc(doc)}
+              className="p-4 flex items-center justify-between gap-3 hover:bg-stone-50/60 transition cursor-pointer"
             >
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-8 h-8 rounded-xl bg-[#EAF3EB] text-[#22633C] flex items-center justify-center shrink-0">
@@ -269,13 +281,15 @@ export const DocumentsView: React.FC = () => {
                   >
                     {doc.title}
                   </p>
-                  <p className="text-[10px] text-stone-400">
+                  <p className="text-[10px] text-stone-400 truncate">
                     {doc.uploaded_by_name} · {doc.category}
+                    {doc.file_name ? ` · ${doc.file_name}` : ''}
+                    {doc.file_size ? ` (${(doc.file_size / 1024).toFixed(0)} KB)` : ''}
                   </p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                 <button
                   onClick={() => setPreviewDoc(doc)}
                   className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 hover:bg-stone-100"
@@ -313,6 +327,7 @@ export const DocumentsView: React.FC = () => {
         isOpen={uploadModalOpen}
         onClose={() => setUploadModalOpen(false)}
         docToEdit={docToEdit}
+        onPreviewDocument={(doc) => setPreviewDoc(doc)}
       />
 
       <DocumentPreviewModal

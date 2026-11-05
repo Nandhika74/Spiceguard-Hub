@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { useRealtimeStore } from '../../hooks/useRealtimeStore';
 import { SEED_MEMBERS } from '../../lib/constants';
-import { Member, MemberRole } from '../../types';
 import { getDeadlineStatus } from '../../lib/dateUtils';
 import { StatCard } from '../ui/StatCard';
 import { ChartCard } from '../ui/ChartCard';
@@ -18,24 +17,18 @@ import {
   X,
 } from 'lucide-react';
 
-const MEMBER_ROLES: MemberRole[] = [
-  'Team Lead & ML Developer',
-  'ML Engineer',
-  'Biotech Researcher',
-  'IoT Engineer',
-];
-
 export const TeamView: React.FC = () => {
-  const { tasks, teamMembers, allowedEmails, addAllowedEmail, removeAllowedEmail, currentUser, updateMemberProfile } =
+  const { tasks, allowedEmails, addAllowedEmail, removeAllowedEmail, currentUser, teamMembers, updateMemberProfile } =
     useRealtimeStore();
 
   const [inputEmail, setInputEmail] = useState('');
-  const [memberToEdit, setMemberToEdit] = useState<Member | null>(null);
+  const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
-  const [editRole, setEditRole] = useState<MemberRole>('ML Engineer');
-  const [editError, setEditError] = useState<string | null>(null);
+  const [editColor, setEditColor] = useState('#14532D');
+  const [editStatus, setEditStatus] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
 
-  const members = teamMembers.length > 0 ? teamMembers : SEED_MEMBERS;
+  const membersList = teamMembers.length > 0 ? teamMembers : SEED_MEMBERS;
 
   // Reconciled task status counts (mutually exclusive)
   const totalAssignedTasks = tasks.length;
@@ -53,7 +46,7 @@ export const TeamView: React.FC = () => {
   );
 
   // Per-member metrics
-  const memberStats = members.map((member) => {
+  const memberStats = membersList.map((member) => {
     const memberTasks = tasks.filter(
       (t) =>
         t.assignee_id?.toLowerCase() === member.email.toLowerCase() ||
@@ -76,28 +69,7 @@ export const TeamView: React.FC = () => {
   });
 
   const avgTasksPerMember =
-    members.length === 0 ? 0 : totalAssignedTasks / members.length;
-
-  const openEditModal = (member: Member) => {
-    setMemberToEdit(member);
-    setEditName(member.full_name);
-    setEditRole(member.role);
-    setEditError(null);
-  };
-
-  const saveMember = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!memberToEdit) return;
-    const result = updateMemberProfile(memberToEdit.id, {
-      full_name: editName,
-      role: editRole,
-    });
-    if (!result.success) {
-      setEditError(result.message);
-      return;
-    }
-    setMemberToEdit(null);
-  };
+    SEED_MEMBERS.length === 0 ? 0 : totalAssignedTasks / SEED_MEMBERS.length;
 
   const handleAddEmail = (e: React.FormEvent) => {
     e.preventDefault();
@@ -115,7 +87,7 @@ export const TeamView: React.FC = () => {
           Team Workspace & Analytics
         </h2>
         <p className="text-xs sm:text-sm text-[#758078] mt-0.5">
-          {members.length} active members · Real-time workload and completion tracking
+          {SEED_MEMBERS.length} active members · Real-time workload and completion tracking
         </p>
       </div>
 
@@ -123,7 +95,7 @@ export const TeamView: React.FC = () => {
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
         <StatCard
           label="Team Members"
-          value={members.length}
+          value={SEED_MEMBERS.length}
           subtext="Core PoC squad"
           icon={Users}
           tone="primary"
@@ -290,8 +262,14 @@ export const TeamView: React.FC = () => {
                   </div>
 
                   <button
+                    type="button"
+                    onClick={() => {
+                      setEditingMemberId(member.id);
+                      setEditName(member.full_name);
+                      setEditColor(member.avatar_color);
+                      setEditStatus(null);
+                    }}
                     className="p-1.5 text-[#758078] hover:text-[#103C2B] rounded-lg hover:bg-[#F6F7F3] transition"
-                    onClick={() => openEditModal(member)}
                     title="Edit member"
                   >
                     <Pencil className="w-3.5 h-3.5" />
@@ -351,34 +329,6 @@ export const TeamView: React.FC = () => {
         </div>
       </div>
 
-      {memberToEdit && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <form onSubmit={saveMember} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-bold text-[#103C2B]">Edit team member</h3>
-              <button type="button" onClick={() => setMemberToEdit(null)} className="p-1 text-stone-400 hover:text-stone-700">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            {editError && <p className="rounded-lg bg-red-50 p-3 text-xs text-red-700">{editError}</p>}
-            <label className="block text-xs font-semibold text-stone-700">
-              Name
-              <input value={editName} onChange={(e) => setEditName(e.target.value)} className="mt-1 w-full rounded-lg border border-stone-200 px-3 py-2 text-sm" required />
-            </label>
-            <label className="block text-xs font-semibold text-stone-700">
-              Job title
-              <select value={editRole} onChange={(e) => setEditRole(e.target.value as MemberRole)} className="mt-1 w-full rounded-lg border border-stone-200 px-3 py-2 text-sm">
-                {MEMBER_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}
-              </select>
-            </label>
-            <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setMemberToEdit(null)} className="rounded-lg px-4 py-2 text-xs font-semibold text-stone-600 hover:bg-stone-100">Cancel</button>
-              <button type="submit" className="rounded-lg bg-[#103B2B] px-4 py-2 text-xs font-semibold text-white hover:bg-[#09251B]">Save changes</button>
-            </div>
-          </form>
-        </div>
-      )}
-
       {/* Invite-Only Allowlist Management */}
       <div className="rounded-xl bg-white border border-[#E2E6DF] p-5 shadow-2xs space-y-3">
         <div className="flex items-center gap-2">
@@ -422,6 +372,104 @@ export const TeamView: React.FC = () => {
           ))}
         </div>
       </div>
+      {/* Edit Member Profile Modal */}
+      {editingMemberId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-stone-200 p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-[#172D25]">Edit Team Member</h3>
+              <button
+                type="button"
+                onClick={() => setEditingMemberId(null)}
+                className="text-stone-400 hover:text-stone-700 text-xs font-semibold"
+              >
+                Cancel
+              </button>
+            </div>
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setIsSavingProfile(true);
+                setEditStatus(null);
+                const res = await updateMemberProfile(editingMemberId, {
+                  full_name: editName,
+                  avatar_color: editColor,
+                });
+                setIsSavingProfile(false);
+                if (!res.success) {
+                  setEditStatus({ type: 'error', msg: res.message });
+                } else {
+                  setEditStatus({ type: 'success', msg: res.message });
+                  setTimeout(() => setEditingMemberId(null), 600);
+                }
+              }}
+              className="space-y-3"
+            >
+              <div>
+                <label className="block text-xs font-semibold text-stone-700 mb-1">
+                  Full Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-emerald-700"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-stone-700 mb-1.5">
+                  Avatar Color
+                </label>
+                <div className="flex items-center gap-2">
+                  {['#14532D', '#0F766E', '#B45309', '#1D4ED8', '#7C3AED', '#BE123C'].map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      onClick={() => setEditColor(color)}
+                      className={`w-7 h-7 rounded-full transition ${
+                        editColor === color ? 'ring-2 ring-offset-2 ring-emerald-800 scale-110' : ''
+                      }`}
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {editStatus && (
+                <div
+                  className={`p-2.5 rounded-xl text-xs border ${
+                    editStatus.type === 'success'
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                      : 'bg-red-50 border-red-200 text-red-700'
+                  }`}
+                >
+                  {editStatus.msg}
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingMemberId(null)}
+                  className="px-3.5 py-2 rounded-xl border border-stone-300 text-xs font-semibold text-stone-700 hover:bg-stone-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingProfile}
+                  className="px-4 py-2 rounded-xl bg-[#103B2B] hover:bg-[#09251B] disabled:opacity-60 text-white text-xs font-semibold"
+                >
+                  {isSavingProfile ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

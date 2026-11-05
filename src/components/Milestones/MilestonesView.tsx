@@ -48,7 +48,7 @@ export const MilestonesView: React.FC = () => {
     deleteMilestone,
   } = useRealtimeStore();
 
-  const [currentView, setCurrentView] = useState<'list' | 'board' | 'timeline'>('board');
+  const [currentView, setCurrentView] = useState<'list' | 'board' | 'timeline'>('list');
   const [showArchived, setShowArchived] = useState(false);
 
   // Filters

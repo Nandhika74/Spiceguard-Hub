@@ -34,6 +34,7 @@ export function useRealtimeStore() {
     signOut: realtimeStore.signOut.bind(realtimeStore),
     clearDbError: realtimeStore.clearDbError.bind(realtimeStore),
     retrySync: realtimeStore.refreshWorkspaceData.bind(realtimeStore),
+    updateMemberProfile: realtimeStore.updateMemberProfile.bind(realtimeStore),
     setCurrentUser: realtimeStore.setCurrentUser.bind(realtimeStore),
     updateMemberProfile: realtimeStore.updateMemberProfile.bind(realtimeStore),
     loginWithEmail: realtimeStore.loginWithEmail.bind(realtimeStore),
