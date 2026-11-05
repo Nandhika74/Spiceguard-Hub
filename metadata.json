@@ -1,0 +1,6 @@
+{
+  "name": "SpiceGuard Hub",
+  "description": "Real-time project tracker for SpiceGuard's 6-month Proof of Concept with Plant Lipids, featuring live syncing for milestones, tasks, meetings, and research docs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#14532D" />
+      <stop offset="100%" stop-color="#0F3A1F" />
+    </linearGradient>
+    <linearGradient id="amberGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FBBF24" />
+      <stop offset="100%" stop-color="#F5A524" />
+    </linearGradient>
+    <linearGradient id="mintGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#86EFAC" />
+      <stop offset="100%" stop-color="#22C55E" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.3" />
+    </filter>
+  </defs>
+
+  <!-- Background with rounded corners -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" />
+
+  <!-- Shield Boundary -->
+  <g filter="url(#shadow)">
+    <path d="M256 70 C340 70 380 95 380 95 C380 230 350 360 256 425 C162 360 132 230 132 95 C132 95 172 70 256 70 Z" 
+          fill="#166534" stroke="#F5A524" stroke-width="8" stroke-linejoin="round" />
+  </g>
+
+  <!-- Inner Shield Core -->
+  <path d="M256 95 C320 95 352 115 352 115 C352 225 328 335 256 390 C184 335 160 225 160 115 C160 115 192 95 256 95 Z" 
+        fill="#14532D" opacity="0.9" />
+
+  <!-- Spice / Leaf Motif with Turmeric Amber Core -->
+  <!-- Left Leaf (Plant Lipids theme) -->
+  <path d="M256 160 C210 180 185 235 210 290 C225 320 256 345 256 345 C256 345 240 295 245 255 C248 230 256 195 256 160 Z" 
+        fill="url(#mintGrad)" />
+
+  <!-- Right Leaf / Turmeric Node -->
+  <path d="M256 160 C302 180 327 235 302 290 C287 320 256 345 256 345 C256 345 272 295 267 255 C264 230 256 195 256 160 Z" 
+        fill="url(#amberGrad)" />
+
+  <!-- Central Stem & Sensor Spark / Hub Indicator -->
+  <circle cx="256" cy="245" r="16" fill="#FFFFFF" />
+  <circle cx="256" cy="245" r="9" fill="#14532D" />
+  <circle cx="256" cy="180" r="8" fill="#FBBF24" />
+  <circle cx="215" cy="230" r="6" fill="#86EFAC" />
+  <circle cx="297" cy="230" r="6" fill="#FBBF24" />
+
+  <!-- Connecting Data Lines (IoT & ML Hub) -->
+  <line x1="256" y1="188" x2="256" y2="237" stroke="#FFFFFF" stroke-width="3" stroke-dasharray="3,3" />
+  <line x1="221" y1="230" x2="247" y2="243" stroke="#FFFFFF" stroke-width="3" stroke-dasharray="3,3" />
+  <line x1="291" y1="230" x2="265" y2="243" stroke="#FFFFFF" stroke-width="3" stroke-dasharray="3,3" />
+  <line x1="256" y1="254" x2="256" y2="340" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" />
+</svg>
