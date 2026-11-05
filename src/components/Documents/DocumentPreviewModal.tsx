@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { DocumentItem } from '../../types';
 import { formatDate } from '../../lib/dateUtils';
-import { getSupabaseClient } from '../../lib/supabase';
+import { getSignedDocumentUrl } from '../../lib/storage';
 import { FileText, Download, X, Loader2, AlertCircle } from 'lucide-react';
 
 interface DocumentPreviewModalProps {
@@ -17,18 +17,9 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({ docu
   useEffect(() => {
     if (!document) return;
     let cancelled = false;
-    const sourceUrl = document.file_url;
-    const supabase = getSupabaseClient();
-    const storagePath = sourceUrl.match(/\/storage\/v1\/object\/(?:public|sign)\/spiceguard-documents\/(.+)$/)?.[1]
-      || (sourceUrl.startsWith('http') ? null : sourceUrl.replace(/^\/+/, ''));
 
     setPreviewUrl(null);
     setError(null);
-    if (!storagePath || !supabase) {
-      setPreviewUrl(sourceUrl);
-      return;
-    }
-
     setLoading(true);
     const timeoutId = window.setTimeout(() => {
       if (!cancelled) {
@@ -37,22 +28,22 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({ docu
       }
     }, 10000);
 
-    void supabase.storage.from('spiceguard-documents').createSignedUrl(decodeURIComponent(storagePath), 3600)
-      .then(({ data, error: signedUrlError }) => {
+    void getSignedDocumentUrl(document.file_url)
+      .then((url) => {
         if (cancelled) return;
         window.clearTimeout(timeoutId);
         setLoading(false);
-        if (signedUrlError || !data?.signedUrl) {
-          setError('The preview URL could not be retrieved. Download the file instead.');
-          return;
-        }
-        setPreviewUrl(data.signedUrl);
+        setPreviewUrl(url);
       })
-      .catch(() => {
+      .catch((previewError: unknown) => {
         if (cancelled) return;
         window.clearTimeout(timeoutId);
         setLoading(false);
-        setError('The preview URL could not be retrieved. Download the file instead.');
+        setError(
+          previewError instanceof Error
+            ? previewError.message
+            : 'The preview URL could not be retrieved. Download the file instead.'
+        );
       });
 
     return () => {
@@ -63,15 +54,15 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({ docu
 
   if (!document) return null;
 
-  const fileUrl = previewUrl || document.file_url;
+  const fileUrl = previewUrl;
   const isImage =
     document.file_type?.startsWith('image/') ||
-    /\.(png|jpe?g|webp|gif|svg)$/i.test(document.file_url || '');
+    /\.(png|jpe?g|webp|gif|svg)$/i.test(document.file_name || '');
 
   const isPdf =
     document.file_type === 'application/pdf' ||
     /\.pdf$/i.test(document.file_name || '') ||
-    fileUrl.toLowerCase().includes('.pdf');
+    /\.pdf$/i.test(document.file_url || '');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs animate-fadeIn">
@@ -94,7 +85,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({ docu
 
           <div className="flex items-center gap-2 shrink-0">
             <a
-              href={fileUrl}
+              href={fileUrl || undefined}
               download={document.file_name || 'spiceguard-doc'}
               target="_blank"
               rel="noreferrer"
@@ -120,11 +111,11 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({ docu
             <div className="p-8 rounded-2xl bg-white border border-red-200 text-center max-w-md space-y-3 shadow-sm">
               <AlertCircle className="w-8 h-8 mx-auto text-red-500" />
               <p className="text-sm font-semibold text-stone-900">{error}</p>
-              <a href={document.file_url} download={document.file_name || 'spiceguard-doc'} className="inline-flex items-center gap-2 rounded-xl bg-emerald-900 px-4 py-2 text-xs font-bold text-white">
+              <a href={fileUrl || undefined} download={document.file_name || 'spiceguard-doc'} className="inline-flex items-center gap-2 rounded-xl bg-emerald-900 px-4 py-2 text-xs font-bold text-white">
                 <Download className="w-3.5 h-3.5" /> Download
               </a>
             </div>
-          ) : isImage ? (
+          ) : isImage && fileUrl ? (
             <div className="max-w-full max-h-[60vh] flex flex-col items-center">
               <img
                 src={fileUrl}
@@ -133,7 +124,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({ docu
                 className="max-h-[55vh] object-contain rounded-2xl shadow-md border border-stone-300"
               />
             </div>
-          ) : isPdf ? (
+          ) : isPdf && fileUrl ? (
             <div className="w-full h-[65vh] rounded-2xl overflow-hidden border border-stone-300 bg-white shadow-inner">
               <iframe
                 src={`${fileUrl}#toolbar=0`}
@@ -151,7 +142,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({ docu
                 {document.description || 'Raw technical document, jupyter notebook, or dataset file.'}
               </p>
               <a
-                href={fileUrl}
+                href={fileUrl || undefined}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-900 hover:bg-emerald-800 text-white text-xs font-bold shadow-xs transition"
