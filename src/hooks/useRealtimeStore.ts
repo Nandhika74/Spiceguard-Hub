@@ -36,9 +36,11 @@ export function useRealtimeStore() {
     retrySync: realtimeStore.refreshWorkspaceData.bind(realtimeStore),
     updateMemberProfile: realtimeStore.updateMemberProfile.bind(realtimeStore),
     setCurrentUser: realtimeStore.setCurrentUser.bind(realtimeStore),
-    updateMemberProfile: realtimeStore.updateMemberProfile.bind(realtimeStore),
+    activateInvitedAccount: realtimeStore.activateInvitedAccount.bind(realtimeStore),
     loginWithEmail: realtimeStore.loginWithEmail.bind(realtimeStore),
     addAllowedEmail: realtimeStore.addAllowedEmail.bind(realtimeStore),
+    generateActivationCodeForInvite:
+      realtimeStore.generateActivationCodeForInvite.bind(realtimeStore),
     removeAllowedEmail: realtimeStore.removeAllowedEmail.bind(realtimeStore),
     addMilestone: realtimeStore.addMilestone.bind(realtimeStore),
     updateMilestone: realtimeStore.updateMilestone.bind(realtimeStore),

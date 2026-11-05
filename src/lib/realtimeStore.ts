@@ -367,6 +367,43 @@ class RealtimeStore {
     return { success: true, message: 'Signed in successfully.' };
   }
 
+  public async activateInvitedAccount(
+    email: string,
+    activationCode: string,
+    password: string
+  ): Promise<{ success: boolean; message: string }> {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      return { success: false, message: 'Supabase is not configured.' };
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanCode = activationCode.trim().toUpperCase();
+    const { data, error } = await supabase.functions.invoke('activate-invite', {
+      body: { email: cleanEmail, activationCode: cleanCode, password },
+    });
+
+    if (error) {
+      let msg = error.message || 'Failed to activate account.';
+      try {
+        const ctx = (error as any)?.context;
+        if (ctx && typeof ctx.json === 'function') {
+          const body = await ctx.json();
+          if (body?.error) msg = body.error;
+        }
+      } catch {
+        // ignore parse error
+      }
+      return { success: false, message: msg };
+    }
+
+    if (data?.error) {
+      return { success: false, message: data.error };
+    }
+
+    return await this.signInWithPassword(cleanEmail, password);
+  }
+
   public async signOut(): Promise<void> {
     const supabase = getSupabaseClient();
     if (this.supabaseSubscription && supabase) {
@@ -481,14 +518,41 @@ class RealtimeStore {
       return;
     }
 
-    // 2. Fetch active workspace membership
-    const { data: membership, error: memberErr } = await supabase
+    // 2. Fetch active workspace membership (or activate pending invitation by email)
+    let { data: membership, error: memberErr } = await supabase
       .from('workspace_members')
       .select('*')
       .eq('user_id', userId)
       .eq('status', 'active')
       .limit(1)
       .single();
+
+    if ((memberErr || !membership) && profile.email) {
+      const { data: pendingInvite } = await supabase
+        .from('workspace_members')
+        .select('*')
+        .ilike('invited_email', profile.email.trim())
+        .eq('status', 'invited')
+        .limit(1)
+        .single();
+
+      if (pendingInvite) {
+        const { data: activated, error: activateErr } = await supabase
+          .from('workspace_members')
+          .update({
+            user_id: userId,
+            status: 'active',
+          })
+          .eq('id', pendingInvite.id)
+          .select('*')
+          .single();
+
+        if (!activateErr && activated) {
+          membership = activated;
+          memberErr = null;
+        }
+      }
+    }
 
     if (memberErr || !membership) {
       this.state.authStatus = 'unauthenticated';
@@ -500,17 +564,26 @@ class RealtimeStore {
 
     const workspaceId = membership.workspace_id as string;
 
-    // 3. Fetch workspace info & active team members
+    // 3. Fetch workspace info & workspace members (active + invited)
     const [wsRes, wmRes] = await Promise.all([
       supabase.from('workspaces').select('*').eq('id', workspaceId).single(),
       supabase
         .from('workspace_members')
-        .select('user_id')
-        .eq('workspace_id', workspaceId)
-        .eq('status', 'active'),
+        .select('user_id, invited_email, status')
+        .eq('workspace_id', workspaceId),
     ]);
 
-    const memberIds = (wmRes.data || []).map((r: any) => r.user_id).filter(Boolean);
+    const activeRows = (wmRes.data || []).filter((r: any) => r.status === 'active');
+    const invitedEmails = (wmRes.data || [])
+      .filter((r: any) => r.status === 'invited' && r.invited_email)
+      .map((r: any) => String(r.invited_email).toLowerCase());
+    if (invitedEmails.length > 0) {
+      this.state.allowedEmails = Array.from(
+        new Set([...this.state.allowedEmails, ...invitedEmails])
+      );
+    }
+
+    const memberIds = activeRows.map((r: any) => r.user_id).filter(Boolean);
     let teamMembers: Member[] = [];
     if (memberIds.length > 0) {
       const { data: profilesData } = await supabase
@@ -794,17 +867,139 @@ class RealtimeStore {
     this.notify();
   }
 
-  public addAllowedEmail(email: string): void {
+  public async addAllowedEmail(
+    email: string,
+    role: string = 'Team Member',
+    isTeamLead: boolean = false
+  ): Promise<{ success: boolean; message: string }> {
     const clean = email.trim().toLowerCase();
+    if (!clean || !clean.includes('@')) {
+      return { success: false, message: 'Please enter a valid email address.' };
+    }
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      if (!this.state.workspaceId) {
+        return { success: false, message: 'No active workspace selected.' };
+      }
+
+      const { data: existing } = await supabase
+        .from('workspace_members')
+        .select('id, status')
+        .eq('workspace_id', this.state.workspaceId)
+        .ilike('invited_email', clean)
+        .limit(1);
+
+      if (existing && existing.length > 0) {
+        return {
+          success: false,
+          message:
+            existing[0].status === 'active'
+              ? `${clean} is already an active member of this workspace.`
+              : `${clean} has already been invited to this workspace.`,
+        };
+      }
+
+      const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+      const randBytes = new Uint8Array(8);
+      crypto.getRandomValues(randBytes);
+      const rawCode = Array.from(randBytes)
+        .map((b) => alphabet[b % alphabet.length])
+        .join('');
+      const formattedCode = `SG-${rawCode.slice(0, 4)}-${rawCode.slice(4, 8)}`;
+
+      const hashBuf = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(formattedCode)
+      );
+      const codeHash = Array.from(new Uint8Array(hashBuf))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+      const { error } = await supabase.from('workspace_members').insert({
+        workspace_id: this.state.workspaceId,
+        invited_email: clean,
+        invited_role: role,
+        invited_is_team_lead: isTeamLead,
+        status: 'invited',
+        activation_code_hash: codeHash,
+        activation_code_expires_at: expiresAt,
+      });
+
+      if (error) {
+        console.warn('Supabase Invite member warning:', error.message);
+        return { success: false, message: error.message };
+      }
+
+      if (!this.state.allowedEmails.includes(clean)) {
+        this.state.allowedEmails = [...this.state.allowedEmails, clean];
+      }
+      this.logActivity('ALLOWLIST_ADD', 'user', clean, `Invited ${clean} to workspace.`);
+      this.notify();
+      return {
+        success: true,
+        message: `Invitation saved for ${clean}. One-time activation code: ${formattedCode} (valid 7 days).`,
+      };
+    }
+
     if (!this.state.allowedEmails.includes(clean)) {
       this.state.allowedEmails = [...this.state.allowedEmails, clean];
-      this.logActivity('ALLOWLIST_ADD', 'user', clean, `Added ${clean} to allowed emails.`);
-      this.notify();
     }
+    this.logActivity('ALLOWLIST_ADD', 'user', clean, `Invited ${clean} to workspace.`);
+    this.notify();
+    return { success: true, message: `Invitation saved for ${clean}.` };
   }
 
-  public removeAllowedEmail(email: string): void {
+  public async generateActivationCodeForInvite(
+    email: string
+  ): Promise<{ success: boolean; message: string; code?: string }> {
     const clean = email.trim().toLowerCase();
+    const supabase = getSupabaseClient();
+    if (!supabase || !this.state.workspaceId) {
+      return { success: false, message: 'Supabase workspace is not connected.' };
+    }
+
+    const { data, error } = await supabase.functions.invoke('generate-invite-code', {
+      body: { workspaceId: this.state.workspaceId, email: clean },
+    });
+
+    if (error) {
+      let msg = error.message || 'Failed to generate activation code.';
+      try {
+        const ctx = (error as any)?.context;
+        if (ctx && typeof ctx.json === 'function') {
+          const body = await ctx.json();
+          if (body?.error) msg = body.error;
+        }
+      } catch {
+        // ignore parse error
+      }
+      return { success: false, message: msg };
+    }
+
+    if (data?.error || !data?.code) {
+      return { success: false, message: data?.error || 'Failed to generate activation code.' };
+    }
+
+    return {
+      success: true,
+      code: data.code,
+      message: `One-time code for ${clean}: ${data.code} (valid 7 days).`,
+    };
+  }
+
+  public async removeAllowedEmail(email: string): Promise<void> {
+    const clean = email.trim().toLowerCase();
+    const supabase = getSupabaseClient();
+    if (supabase && this.state.workspaceId) {
+      await supabase
+        .from('workspace_members')
+        .delete()
+        .eq('workspace_id', this.state.workspaceId)
+        .ilike('invited_email', clean)
+        .eq('status', 'invited');
+    }
     this.state.allowedEmails = this.state.allowedEmails.filter((e) => e.toLowerCase() !== clean);
     this.notify();
   }

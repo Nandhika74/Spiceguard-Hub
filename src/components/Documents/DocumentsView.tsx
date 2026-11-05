@@ -43,8 +43,15 @@ export const DocumentsView: React.FC = () => {
   useEffect(() => {
     if (!activeMenuId) return;
     const handleOutsideClick = () => setActiveMenuId(null);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setActiveMenuId(null);
+    };
     window.addEventListener('click', handleOutsideClick);
-    return () => window.removeEventListener('click', handleOutsideClick);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('click', handleOutsideClick);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, [activeMenuId]);
 
   const filteredDocs = documents.filter((doc) => {

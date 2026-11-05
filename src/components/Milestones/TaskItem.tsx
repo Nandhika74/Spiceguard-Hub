@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Task, Milestone } from '../../types';
 import { useRealtimeStore } from '../../hooks/useRealtimeStore';
 import { formatDate, getDeadlineStatus, timeAgo } from '../../lib/dateUtils';
@@ -28,6 +28,20 @@ export const TaskItem: React.FC<TaskItemProps> = ({
 }) => {
   const { toggleTaskStatus, deleteTask } = useRealtimeStore();
   const [showMenu, setShowMenu] = useState(false);
+
+  useEffect(() => {
+    if (!showMenu) return;
+    const handleClose = () => setShowMenu(false);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowMenu(false);
+    };
+    window.addEventListener('click', handleClose);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('click', handleClose);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showMenu]);
 
   const isDone = task.status === 'Done';
   const { isOverdue, daysRemaining } = getDeadlineStatus(task.deadline, isDone);
@@ -139,7 +153,7 @@ export const TaskItem: React.FC<TaskItemProps> = ({
         </div>
 
         {/* Options */}
-        <div className="relative">
+        <div className="relative" onClick={(e) => e.stopPropagation()}>
           <button
             onClick={() => setShowMenu(!showMenu)}
             className="p-1 text-stone-300 hover:text-stone-700 rounded-lg"

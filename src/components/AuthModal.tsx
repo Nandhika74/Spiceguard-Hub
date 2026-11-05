@@ -10,9 +10,19 @@ interface AuthModalProps {
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAuth = false }) => {
-  const { currentUser, authStatus, authError, signInWithPassword, signOut } = useRealtimeStore();
+  const {
+    currentUser,
+    authStatus,
+    authError,
+    signInWithPassword,
+    activateInvitedAccount,
+    signOut,
+  } = useRealtimeStore();
+  const [mode, setMode] = useState<'signin' | 'activate'>('signin');
   const [emailInput, setEmailInput] = useState('');
+  const [activationCodeInput, setActivationCodeInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -32,20 +42,40 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
       return;
     }
 
+    if (mode === 'activate') {
+      if (!activationCodeInput.trim()) {
+        setErrorMsg('Please enter your one-time activation code.');
+        return;
+      }
+      if (passwordInput.length < 6) {
+        setErrorMsg('Password must be at least 6 characters.');
+        return;
+      }
+      if (passwordInput !== confirmPasswordInput) {
+        setErrorMsg('Passwords do not match.');
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     try {
-      const res = await signInWithPassword(email, passwordInput);
+      const res =
+        mode === 'activate'
+          ? await activateInvitedAccount(email, activationCodeInput, passwordInput)
+          : await signInWithPassword(email, passwordInput);
       if (!res.success) {
         setErrorMsg(res.message);
         return;
       }
-      setSuccessMsg('Signed in! Loading workspace...');
+      setSuccessMsg(
+        mode === 'activate'
+          ? 'Account activated! Loading workspace...'
+          : 'Signed in! Loading workspace...'
+      );
       setPasswordInput('');
-      if (!requireAuth) {
-        setTimeout(() => {
-          onClose();
-        }, 600);
-      }
+      setConfirmPasswordInput('');
+      setActivationCodeInput('');
+      onClose();
     } finally {
       setIsSubmitting(false);
     }
@@ -134,6 +164,40 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-3">
+              {/* Mode Toggle: Sign In vs Activate Invited Account */}
+              <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-stone-100 text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('signin');
+                    setErrorMsg(null);
+                    setSuccessMsg(null);
+                  }}
+                  className={`py-1.5 rounded-lg transition ${
+                    mode === 'signin'
+                      ? 'bg-white text-emerald-950 shadow-2xs'
+                      : 'text-stone-600 hover:text-stone-900'
+                  }`}
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('activate');
+                    setErrorMsg(null);
+                    setSuccessMsg(null);
+                  }}
+                  className={`py-1.5 rounded-lg transition ${
+                    mode === 'activate'
+                      ? 'bg-white text-emerald-950 shadow-2xs'
+                      : 'text-stone-600 hover:text-stone-900'
+                  }`}
+                >
+                  Activate Account
+                </button>
+              </div>
+
               <div>
                 <label className="block text-xs font-medium text-stone-700 mb-1">
                   Team Email
@@ -152,21 +216,61 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
                 </div>
               </div>
 
+              {mode === 'activate' && (
+                <div>
+                  <label className="block text-xs font-medium text-stone-700 mb-1">
+                    One-Time Activation Code
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={activationCodeInput}
+                    onChange={(e) => setActivationCodeInput(e.target.value.toUpperCase())}
+                    placeholder="SG-XXXX-XXXX"
+                    className="w-full px-3.5 py-2 text-xs rounded-xl border border-stone-300 font-mono uppercase focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:border-transparent"
+                  />
+                </div>
+              )}
+
               <div>
-                <label className="block text-xs font-medium text-stone-700 mb-1">Password</label>
+                <label className="block text-xs font-medium text-stone-700 mb-1">
+                  {mode === 'activate' ? 'Choose Password (min 6 characters)' : 'Password'}
+                </label>
                 <div className="relative">
                   <Lock className="w-4 h-4 text-stone-400 absolute left-3 top-3" />
                   <input
                     type="password"
                     required
-                    autoComplete="current-password"
+                    autoComplete={mode === 'activate' ? 'new-password' : 'current-password'}
                     value={passwordInput}
                     onChange={(e) => setPasswordInput(e.target.value)}
-                    placeholder="Enter your password"
+                    placeholder={
+                      mode === 'activate' ? 'Create your password' : 'Enter your password'
+                    }
                     className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:border-transparent"
                   />
                 </div>
               </div>
+
+              {mode === 'activate' && (
+                <div>
+                  <label className="block text-xs font-medium text-stone-700 mb-1">
+                    Confirm Password
+                  </label>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-stone-400 absolute left-3 top-3" />
+                    <input
+                      type="password"
+                      required
+                      autoComplete="new-password"
+                      value={confirmPasswordInput}
+                      onChange={(e) => setConfirmPasswordInput(e.target.value)}
+                      placeholder="Re-enter your password"
+                      className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:border-transparent"
+                    />
+                  </div>
+                </div>
+              )}
 
               {displayError && (
                 <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs flex items-start gap-2">
@@ -188,7 +292,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
                 className="w-full mt-2 py-2.5 px-4 rounded-xl bg-emerald-900 hover:bg-emerald-800 disabled:opacity-60 text-white text-xs font-semibold shadow-sm transition active:scale-98 flex items-center justify-center gap-2"
               >
                 <UserCheck className="w-4 h-4" />
-                {isSubmitting ? 'Signing in...' : 'Sign In'}
+                {isSubmitting
+                  ? mode === 'activate'
+                    ? 'Activating...'
+                    : 'Signing in...'
+                  : mode === 'activate'
+                    ? 'Activate & Sign In'
+                    : 'Sign In'}
               </button>
             </form>
           )}

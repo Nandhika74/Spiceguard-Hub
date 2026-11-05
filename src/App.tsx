@@ -39,7 +39,6 @@ export default function App() {
           isOpen={true}
           onClose={() => {}}
           requireAuth={true}
-          onOpenConnection={() => setConnectionModalOpen(true)}
         />
         <ConnectionModal
           isOpen={connectionModalOpen}
@@ -121,17 +120,11 @@ export default function App() {
       <AuthModal
         isOpen={authModalOpen}
         onClose={() => setAuthModalOpen(false)}
-        onOpenConnection={() => {
-          setAuthModalOpen(false);
-          setConnectionInitialTab('connection');
-          setConnectionModalOpen(true);
-        }}
       />
 
       <ConnectionModal
         isOpen={connectionModalOpen}
         onClose={() => setConnectionModalOpen(false)}
-        initialTab={connectionInitialTab}
       />
     </div>
   );

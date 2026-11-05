@@ -18,8 +18,16 @@ import {
 } from 'lucide-react';
 
 export const TeamView: React.FC = () => {
-  const { tasks, allowedEmails, addAllowedEmail, removeAllowedEmail, currentUser, teamMembers, updateMemberProfile } =
-    useRealtimeStore();
+  const {
+    tasks,
+    allowedEmails,
+    addAllowedEmail,
+    generateActivationCodeForInvite,
+    removeAllowedEmail,
+    currentUser,
+    teamMembers,
+    updateMemberProfile,
+  } = useRealtimeStore();
 
   const [inputEmail, setInputEmail] = useState('');
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
@@ -71,12 +79,32 @@ export const TeamView: React.FC = () => {
   const avgTasksPerMember =
     SEED_MEMBERS.length === 0 ? 0 : totalAssignedTasks / SEED_MEMBERS.length;
 
-  const handleAddEmail = (e: React.FormEvent) => {
+  const [inviteStatus, setInviteStatus] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+  const [isInviting, setIsInviting] = useState(false);
+
+  const handleAddEmail = async (e: React.FormEvent) => {
     e.preventDefault();
+    setInviteStatus(null);
     const clean = inputEmail.trim().toLowerCase();
-    if (!clean || !clean.includes('@')) return;
-    addAllowedEmail(clean);
-    setInputEmail('');
+    if (!clean || !clean.includes('@')) {
+      setInviteStatus({ type: 'error', text: 'Please enter a valid email address.' });
+      return;
+    }
+    setIsInviting(true);
+    try {
+      const res = await addAllowedEmail(clean);
+      if (res.success) {
+        setInputEmail('');
+        setInviteStatus({ type: 'success', text: res.message });
+      } else {
+        setInviteStatus({ type: 'error', text: res.message });
+      }
+    } finally {
+      setIsInviting(false);
+    }
   };
 
   return (
@@ -344,15 +372,27 @@ export const TeamView: React.FC = () => {
             value={inputEmail}
             onChange={(e) => setInputEmail(e.target.value)}
             placeholder="Add team member email..."
-            className="flex-1 px-3 py-2 text-xs rounded-lg border border-[#E2E6DF] bg-[#F6F7F3] focus:outline-none focus:ring-2 focus:ring-[#1C6245]"
+            disabled={isInviting}
+            className="flex-1 px-3 py-2 text-xs rounded-lg border border-[#E2E6DF] bg-[#F6F7F3] focus:outline-none focus:ring-2 focus:ring-[#1C6245] disabled:opacity-60"
           />
           <button
             type="submit"
-            className="px-4 py-2 rounded-lg bg-[#103C2B] hover:bg-[#1C6245] text-white text-xs font-semibold transition"
+            disabled={isInviting}
+            className="px-4 py-2 rounded-lg bg-[#103C2B] hover:bg-[#1C6245] disabled:opacity-60 text-white text-xs font-semibold transition"
           >
-            Add
+            {isInviting ? 'Inviting...' : 'Add'}
           </button>
         </form>
+
+        {inviteStatus && (
+          <p
+            className={`text-xs font-medium ${
+              inviteStatus.type === 'success' ? 'text-emerald-700' : 'text-red-600'
+            }`}
+          >
+            {inviteStatus.text}
+          </p>
+        )}
 
         <div className="flex flex-wrap gap-2 pt-1">
           {allowedEmails.map((email) => (
@@ -361,6 +401,22 @@ export const TeamView: React.FC = () => {
               className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#F6F7F3] border border-[#E2E6DF] text-xs text-[#172D25]"
             >
               <span>{email}</span>
+              {currentUser.is_team_lead && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const res = await generateActivationCodeForInvite(email);
+                    setInviteStatus({
+                      type: res.success ? 'success' : 'error',
+                      text: res.message,
+                    });
+                  }}
+                  className="text-[10px] font-semibold text-[#164E33] hover:underline px-1"
+                  title="Generate one-time activation code"
+                >
+                  Generate Code
+                </button>
+              )}
               <button
                 onClick={() => removeAllowedEmail(email)}
                 className="text-[#758078] hover:text-[#D9534F]"
