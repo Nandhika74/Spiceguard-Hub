@@ -20,7 +20,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
   } = useRealtimeStore();
   const [mode, setMode] = useState<'signin' | 'activate'>('signin');
   const [emailInput, setEmailInput] = useState('');
-  const [activationCodeInput, setActivationCodeInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -43,10 +42,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
     }
 
     if (mode === 'activate') {
-      if (!activationCodeInput.trim()) {
-        setErrorMsg('Please enter your one-time activation code.');
-        return;
-      }
       if (passwordInput.length < 6) {
         setErrorMsg('Password must be at least 6 characters.');
         return;
@@ -61,7 +56,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
     try {
       const res =
         mode === 'activate'
-          ? await activateInvitedAccount(email, activationCodeInput, passwordInput)
+          ? await activateInvitedAccount(email, passwordInput)
           : await signInWithPassword(email, passwordInput);
       if (!res.success) {
         setErrorMsg(res.message);
@@ -69,12 +64,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
       }
       setSuccessMsg(
         mode === 'activate'
-          ? 'Account activated! Loading workspace...'
+          ? 'Password set! Loading workspace...'
           : 'Signed in! Loading workspace...'
       );
       setPasswordInput('');
       setConfirmPasswordInput('');
-      setActivationCodeInput('');
       onClose();
     } finally {
       setIsSubmitting(false);
@@ -194,7 +188,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
                       : 'text-stone-600 hover:text-stone-900'
                   }`}
                 >
-                  Activate Account
+                  Set / Reset Password
                 </button>
               </div>
 
@@ -216,25 +210,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
                 </div>
               </div>
 
-              {mode === 'activate' && (
-                <div>
-                  <label className="block text-xs font-medium text-stone-700 mb-1">
-                    One-Time Activation Code
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={activationCodeInput}
-                    onChange={(e) => setActivationCodeInput(e.target.value.toUpperCase())}
-                    placeholder="SG-XXXX-XXXX"
-                    className="w-full px-3.5 py-2 text-xs rounded-xl border border-stone-300 font-mono uppercase focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:border-transparent"
-                  />
-                </div>
-              )}
-
               <div>
                 <label className="block text-xs font-medium text-stone-700 mb-1">
-                  {mode === 'activate' ? 'Choose Password (min 6 characters)' : 'Password'}
+                  {mode === 'activate' ? 'New Password (min 6 characters)' : 'Password'}
                 </label>
                 <div className="relative">
                   <Lock className="w-4 h-4 text-stone-400 absolute left-3 top-3" />
@@ -245,7 +223,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
                     value={passwordInput}
                     onChange={(e) => setPasswordInput(e.target.value)}
                     placeholder={
-                      mode === 'activate' ? 'Create your password' : 'Enter your password'
+                      mode === 'activate' ? 'Enter your new password' : 'Enter your password'
                     }
                     className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:border-transparent"
                   />
@@ -255,7 +233,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
               {mode === 'activate' && (
                 <div>
                   <label className="block text-xs font-medium text-stone-700 mb-1">
-                    Confirm Password
+                    Confirm New Password
                   </label>
                   <div className="relative">
                     <Lock className="w-4 h-4 text-stone-400 absolute left-3 top-3" />
@@ -265,7 +243,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
                       autoComplete="new-password"
                       value={confirmPasswordInput}
                       onChange={(e) => setConfirmPasswordInput(e.target.value)}
-                      placeholder="Re-enter your password"
+                      placeholder="Re-enter your new password"
                       className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:border-transparent"
                     />
                   </div>
@@ -273,9 +251,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
               )}
 
               {displayError && (
-                <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>{displayError}</span>
+                <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs flex flex-col gap-1.5">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{displayError}</span>
+                  </div>
+                  {mode === 'signin' && displayError.toLowerCase().includes('invalid login credentials') && (
+                    <div className="pl-6 text-[11px] text-stone-600">
+                      Haven't set your password yet or forgot it?{' '}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMode('activate');
+                          setErrorMsg(null);
+                        }}
+                        className="font-bold text-emerald-800 underline hover:text-emerald-950"
+                      >
+                        Click here to Set / Reset Password
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -297,7 +292,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, requireAu
                     ? 'Activating...'
                     : 'Signing in...'
                   : mode === 'activate'
-                    ? 'Activate & Sign In'
+                    ? 'Save Password & Sign In'
                     : 'Sign In'}
               </button>
             </form>

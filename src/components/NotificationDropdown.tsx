@@ -1,7 +1,18 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useRealtimeStore } from '../hooks/useRealtimeStore';
 import { timeAgo } from '../lib/dateUtils';
-import { Bell, CheckCheck, Trash2, Calendar, MessageSquare, AlertCircle, CheckCircle2, X } from 'lucide-react';
+import {
+  Bell,
+  CheckCheck,
+  Trash2,
+  Calendar,
+  MessageSquare,
+  AlertCircle,
+  CheckCircle2,
+  X,
+  Radio,
+  FileText,
+} from 'lucide-react';
 
 interface NotificationDropdownProps {
   isOpen: boolean;
@@ -9,15 +20,34 @@ interface NotificationDropdownProps {
 }
 
 export const NotificationDropdown: React.FC<NotificationDropdownProps> = ({ isOpen, onClose }) => {
-  const { notifications, markNotificationAsRead, markAllNotificationsAsRead, clearAllNotifications } =
-    useRealtimeStore();
+  const {
+    notifications,
+    markNotificationAsRead,
+    markAllNotificationsAsRead,
+    clearAllNotifications,
+    requestNotificationPermission,
+  } = useRealtimeStore();
+
+  const [permission, setPermission] = useState<string>(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      return Notification.permission;
+    }
+    return 'unsupported';
+  });
 
   if (!isOpen) return null;
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
+  const handleRequestPermission = async () => {
+    const granted = await requestNotificationPermission();
+    setPermission(granted ? 'granted' : 'denied');
+  };
+
   const getIcon = (type: string) => {
     switch (type) {
+      case 'task_completed':
+        return <CheckCircle2 className="w-4 h-4 text-emerald-700" />;
       case 'task_assigned':
         return <CheckCircle2 className="w-4 h-4 text-emerald-600" />;
       case 'new_comment':
@@ -35,12 +65,12 @@ export const NotificationDropdown: React.FC<NotificationDropdownProps> = ({ isOp
   };
 
   return (
-    <div className="absolute right-0 top-12 w-80 sm:w-96 rounded-2xl bg-white shadow-2xl border border-stone-200 z-50 overflow-hidden animate-scaleIn">
+    <div className="absolute right-0 top-12 w-80 sm:w-96 rounded-2xl bg-white shadow-2xl border border-stone-200 z-50 overflow-hidden animate-scaleIn flex flex-col">
       {/* Header */}
       <div className="bg-stone-50 px-4 py-3 border-b border-stone-200 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Bell className="w-4 h-4 text-emerald-900" />
-          <h3 className="text-xs font-bold text-stone-900">Notifications</h3>
+          <Bell className="w-4 h-4 text-[#103B2B]" />
+          <h3 className="text-xs font-bold text-stone-900">Team Notifications</h3>
           {unreadCount > 0 && (
             <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full">
               {unreadCount} new
@@ -71,6 +101,34 @@ export const NotificationDropdown: React.FC<NotificationDropdownProps> = ({ isOp
           </button>
         </div>
       </div>
+
+      {/* Browser Notification Banner */}
+      {permission === 'default' && (
+        <div className="bg-emerald-950 text-white px-4 py-2.5 flex items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2">
+            <Radio className="w-3.5 h-3.5 text-emerald-400 shrink-0 animate-pulse" />
+            <span className="text-[11px] leading-tight text-emerald-100">
+              Enable desktop alerts for team visits & task updates
+            </span>
+          </div>
+          <button
+            onClick={handleRequestPermission}
+            className="px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-emerald-950 font-bold text-[10px] shrink-0 transition"
+          >
+            Allow
+          </button>
+        </div>
+      )}
+
+      {permission === 'granted' && (
+        <div className="bg-emerald-50 px-4 py-1.5 border-b border-emerald-100 flex items-center justify-between text-[10px] text-emerald-800 font-medium">
+          <span className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+            Desktop alerts active for all 4 team members
+          </span>
+          <span className="text-[9px] text-emerald-600">Native push on</span>
+        </div>
+      )}
 
       {/* List */}
       <div className="max-h-80 overflow-y-auto divide-y divide-stone-100">

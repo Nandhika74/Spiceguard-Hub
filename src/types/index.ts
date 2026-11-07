@@ -108,6 +108,11 @@ export interface Task {
   priority: TaskPriority;
   notes?: string;
   completed_at?: string | null;
+  completion_date?: string | null; // e.g., actual visit or execution date like "2026-11-06"
+  completion_details?: string | null; // notes, findings, observations
+  completed_by_name?: string | null;
+  completion_document_id?: string | null; // linked to documents section
+  completion_document_title?: string | null;
   sort_order: number;
   created_by?: string;
   created_by_id?: string | null;
@@ -195,6 +200,7 @@ export interface DocumentItem {
 
 export type NotificationType =
   | 'task_assigned'
+  | 'task_completed'
   | 'task_due_soon'
   | 'task_overdue'
   | 'new_comment'

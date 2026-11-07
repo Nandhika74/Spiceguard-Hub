@@ -2,8 +2,9 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { useRealtimeStore } from '../../hooks/useRealtimeStore';
 import { getDeadlineStatus, getDaysLeftUntil, formatDate, timeAgo } from '../../lib/dateUtils';
-import { ActiveTab } from '../../types';
+import { ActiveTab, Task } from '../../types';
 import { SerpentineRoadmap } from './SerpentineRoadmap';
+import { TaskCompletionModal } from '../Milestones/TaskCompletionModal';
 import {
   Calendar,
   AlertTriangle,
@@ -30,6 +31,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateTab }) =
     activityLog,
     toggleTaskStatus,
   } = useRealtimeStore();
+
+  const [taskForCompletionModal, setTaskForCompletionModal] = React.useState<Task | null>(null);
+
+  const handleToggleTask = (taskId: string) => {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    if (task.status === 'Done') {
+      toggleTaskStatus(taskId);
+    } else {
+      setTaskForCompletionModal(task);
+    }
+  };
 
   const activeMilestones = milestones.filter((m) => !m.archived);
 
@@ -363,7 +376,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateTab }) =
             <SerpentineRoadmap
               milestones={activeMilestones}
               tasks={tasks}
-              onToggleTask={toggleTaskStatus}
+              onToggleTask={handleToggleTask}
               onNavigateTab={onNavigateTab}
             />
           </div>
@@ -398,13 +411,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateTab }) =
                   <div key={t.id} className="py-3 flex items-center justify-between gap-3">
                     <div className="flex items-center gap-3 min-w-0">
                       <button
-                        onClick={() => toggleTaskStatus(t.id)}
+                        onClick={() => handleToggleTask(t.id)}
                         className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition ${
                           isDone
                             ? 'bg-[#103B2B] border-[#103B2B] text-white'
                             : 'border-stone-300 hover:border-[#103B2B] bg-white'
                         }`}
-                        title={isDone ? 'Mark as To Do' : 'Mark as Completed'}
+                        title={isDone ? 'Mark as To Do' : 'Mark as Completed & Record Visit'}
                       >
                         {isDone && <Check className="w-3 h-3 stroke-[3]" />}
                       </button>
@@ -418,7 +431,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateTab }) =
                           {t.title}
                         </p>
                         <p className="text-[11px] text-stone-400 truncate">
-                          {parentM?.phase_label || 'PoC'} · Due {formatDate(t.deadline)}
+                          {parentM?.phase_label || 'PoC'} · {isDone && t.completion_date ? `Visited ${formatDate(t.completion_date).replace(/, \d{4}/, '')}` : `Due ${formatDate(t.deadline)}`}
                         </p>
                       </div>
                     </div>
@@ -626,6 +639,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateTab }) =
           )}
         </div>
       </div>
+
+      <TaskCompletionModal
+        task={taskForCompletionModal}
+        isOpen={Boolean(taskForCompletionModal)}
+        onClose={() => setTaskForCompletionModal(null)}
+      />
     </div>
   );
 };

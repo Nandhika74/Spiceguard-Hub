@@ -40,8 +40,6 @@ export const INITIAL_ALLOWED_EMAILS = [
   'nithyasree2410841@ssn.edu.in',
   'sivakumarans.bbt24@rathinam.in',
   'abhijithsriram2410202@ssn.edu.in',
-  'nahypin17@gmail.com',
-  'roopavathik@ssnifound.in',
 ];
 
 export const INITIAL_MILESTONES: Milestone[] = [

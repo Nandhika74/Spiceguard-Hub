@@ -8,6 +8,7 @@ import { MilestoneFormModal } from './MilestoneFormModal';
 import { TaskFormModal } from './TaskFormModal';
 import { MilestoneDateHistoryModal } from './MilestoneDateHistoryModal';
 import { TaskCommentsModal } from './TaskCommentsModal';
+import { TaskCompletionModal } from './TaskCompletionModal';
 import { StatCard } from '../ui/StatCard';
 import { ChartCard } from '../ui/ChartCard';
 import { DonutChart } from '../ui/DonutChart';
@@ -33,6 +34,7 @@ import {
   Flag,
   CheckCircle2,
   ListTodo,
+  FileText,
 } from 'lucide-react';
 
 export const MilestonesView: React.FC = () => {
@@ -64,6 +66,8 @@ export const MilestonesView: React.FC = () => {
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [targetMilestoneForTask, setTargetMilestoneForTask] = useState<string | undefined>(undefined);
   const [taskToEdit, setTaskToEdit] = useState<Task | null>(null);
+
+  const [taskForCompletionModal, setTaskForCompletionModal] = useState<Task | null>(null);
 
   const [dateHistoryMilestone, setDateHistoryMilestone] = useState<Milestone | null>(null);
   const [commentsModalTask, setCommentsModalTask] = useState<Task | null>(null);
@@ -111,7 +115,11 @@ export const MilestonesView: React.FC = () => {
   const openTasksCount = filteredTasks.filter((t) => t.status !== 'Done').length;
 
   const handleToggleTaskStatus = (task: Task) => {
-    toggleTaskStatus(task.id);
+    if (task.status === 'Done') {
+      toggleTaskStatus(task.id);
+    } else {
+      setTaskForCompletionModal(task);
+    }
   };
 
   const handleMoveTaskStatus = (taskId: string, targetStatus: TaskStatus) => {
@@ -556,6 +564,12 @@ export const MilestonesView: React.FC = () => {
         task={commentsModalTask}
         onClose={() => setCommentsModalTask(null)}
       />
+
+      <TaskCompletionModal
+        task={taskForCompletionModal}
+        isOpen={Boolean(taskForCompletionModal)}
+        onClose={() => setTaskForCompletionModal(null)}
+      />
     </div>
   );
 
@@ -615,7 +629,7 @@ export const MilestonesView: React.FC = () => {
                   </p>
                 </div>
 
-                {/* Priority & Deadline Row matching image_9221fae2.png */}
+                {/* Priority & Deadline / Completion Date Row */}
                 <div className="flex items-center gap-2 flex-wrap">
                   {/* Priority Pill */}
                   <span
@@ -628,8 +642,13 @@ export const MilestonesView: React.FC = () => {
                     {task.priority === 'High' ? 'HIGH' : 'MEDIUM'}
                   </span>
 
-                  {/* Deadline badge */}
-                  {task.deadline && (
+                  {/* Completion date or deadline badge */}
+                  {isDone ? (
+                    <span className="text-[10px] text-emerald-800 font-semibold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                      <span>{task.completion_date ? `Visited ${formatDate(task.completion_date).replace(/, \d{4}/, '')}` : 'Completed'}</span>
+                    </span>
+                  ) : task.deadline ? (
                     <span className="text-[10px] text-stone-500 flex items-center gap-1 font-medium">
                       {isOverdue ? (
                         <span className="text-red-500 font-bold flex items-center gap-1">
@@ -648,8 +667,22 @@ export const MilestonesView: React.FC = () => {
                         </span>
                       )}
                     </span>
-                  )}
+                  ) : null}
                 </div>
+
+                {/* Completion observations snippet & attached doc on board card */}
+                {isDone && task.completion_details && (
+                  <p className="text-[10px] text-stone-600 bg-emerald-50/70 p-2 rounded-lg border border-emerald-100 italic line-clamp-2 leading-relaxed">
+                    &ldquo;{task.completion_details}&rdquo;
+                  </p>
+                )}
+
+                {isDone && task.completion_document_title && (
+                  <div className="flex items-center gap-1.5 text-[10px] font-semibold text-emerald-900 bg-white px-2 py-1 rounded-md border border-emerald-200 shadow-2xs truncate">
+                    <FileText className="w-3 h-3 text-emerald-700 shrink-0" />
+                    <span className="truncate">{task.completion_document_title}</span>
+                  </div>
+                )}
 
                 {/* Bottom Row: Assignee Avatar & Actions */}
                 <div className="pt-1 flex items-center justify-between border-t border-stone-50">

@@ -22,7 +22,6 @@ export const TeamView: React.FC = () => {
     tasks,
     allowedEmails,
     addAllowedEmail,
-    generateActivationCodeForInvite,
     removeAllowedEmail,
     currentUser,
     teamMembers,
@@ -401,22 +400,6 @@ export const TeamView: React.FC = () => {
               className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#F6F7F3] border border-[#E2E6DF] text-xs text-[#172D25]"
             >
               <span>{email}</span>
-              {currentUser.is_team_lead && (
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const res = await generateActivationCodeForInvite(email);
-                    setInviteStatus({
-                      type: res.success ? 'success' : 'error',
-                      text: res.message,
-                    });
-                  }}
-                  className="text-[10px] font-semibold text-[#164E33] hover:underline px-1"
-                  title="Generate one-time activation code"
-                >
-                  Generate Code
-                </button>
-              )}
               <button
                 onClick={() => removeAllowedEmail(email)}
                 className="text-[#758078] hover:text-[#D9534F]"

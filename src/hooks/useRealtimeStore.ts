@@ -27,9 +27,13 @@ export function useRealtimeStore() {
     isSyncing: state.isSyncing,
     lastSyncTime: state.lastSyncTime,
     allowedEmails: state.allowedEmails,
+    onlineUsers: state.onlineUsers,
+    liveCollaborationAlert: state.liveCollaborationAlert,
+    recentTaskActions: state.recentTaskActions,
     isTeamLead: realtimeStore.isCurrentUserTeamLead(),
 
     // Actions
+    dismissLiveAlert: realtimeStore.dismissLiveAlert.bind(realtimeStore),
     signInWithPassword: realtimeStore.signInWithPassword.bind(realtimeStore),
     signOut: realtimeStore.signOut.bind(realtimeStore),
     clearDbError: realtimeStore.clearDbError.bind(realtimeStore),
@@ -39,8 +43,6 @@ export function useRealtimeStore() {
     activateInvitedAccount: realtimeStore.activateInvitedAccount.bind(realtimeStore),
     loginWithEmail: realtimeStore.loginWithEmail.bind(realtimeStore),
     addAllowedEmail: realtimeStore.addAllowedEmail.bind(realtimeStore),
-    generateActivationCodeForInvite:
-      realtimeStore.generateActivationCodeForInvite.bind(realtimeStore),
     removeAllowedEmail: realtimeStore.removeAllowedEmail.bind(realtimeStore),
     addMilestone: realtimeStore.addMilestone.bind(realtimeStore),
     updateMilestone: realtimeStore.updateMilestone.bind(realtimeStore),
@@ -51,6 +53,7 @@ export function useRealtimeStore() {
     addTask: realtimeStore.addTask.bind(realtimeStore),
     updateTask: realtimeStore.updateTask.bind(realtimeStore),
     toggleTaskStatus: realtimeStore.toggleTaskStatus.bind(realtimeStore),
+    completeTaskWithDetails: realtimeStore.completeTaskWithDetails.bind(realtimeStore),
     deleteTask: realtimeStore.deleteTask.bind(realtimeStore),
     undoDeleteTask: realtimeStore.undoDeleteTask.bind(realtimeStore),
     bulkUpdateTasks: realtimeStore.bulkUpdateTasks.bind(realtimeStore),
@@ -65,6 +68,7 @@ export function useRealtimeStore() {
     markNotificationAsRead: realtimeStore.markNotificationAsRead.bind(realtimeStore),
     markAllNotificationsAsRead: realtimeStore.markAllNotificationsAsRead.bind(realtimeStore),
     clearAllNotifications: realtimeStore.clearAllNotifications.bind(realtimeStore),
+    requestNotificationPermission: realtimeStore.requestNotificationPermission.bind(realtimeStore),
     resetToFactorySeed: realtimeStore.resetToFactorySeed.bind(realtimeStore),
     reconnectSupabase: realtimeStore.initSupabaseRealtime.bind(realtimeStore),
   };

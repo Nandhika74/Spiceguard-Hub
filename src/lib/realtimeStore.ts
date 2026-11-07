@@ -47,6 +47,9 @@ interface StoreState {
   isRealtimeConnected: boolean;
   isSyncing: boolean;
   lastSyncTime: Date | null;
+  onlineUsers: { email: string; full_name: string; online_at: string }[];
+  liveCollaborationAlert: { id: string; message: string; actor: string; timestamp: number } | null;
+  recentTaskActions: Record<string, { actor: string; action: string; timestamp: number }>;
 }
 
 const STORAGE_KEY_PREFIX = 'spiceguard_hub_v3_';
@@ -71,12 +74,36 @@ function saveToStorage<T>(key: string, value: T): void {
   }
 }
 
+function playNotificationChime(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.12);
+    gain.gain.setValueAtTime(0.06, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.22);
+  } catch {
+    // Ignore audio policy errors
+  }
+}
+
 class RealtimeStore {
   private state: StoreState;
   private listeners: Set<Listener> = new Set();
   private broadcastChannel: BroadcastChannel | null = null;
   private supabaseSubscription: any = null;
   private authSubscription: { unsubscribe: () => void } | null = null;
+  private liveAlertTimeout: any = null;
+  private syncPollingInterval: any = null;
 
   constructor() {
     const supabaseReady = isSupabaseConfigured();
@@ -103,6 +130,9 @@ class RealtimeStore {
         isRealtimeConnected: false,
         isSyncing: true,
         lastSyncTime: null,
+        onlineUsers: [],
+        liveCollaborationAlert: null,
+        recentTaskActions: {},
       };
       this.initSupabaseRealtime();
     } else {
@@ -114,8 +144,6 @@ class RealtimeStore {
         'nithyasree2410841@ssn.edu.in',
         'sivakumarans.bbt24@rathinam.in',
         'abhijithsriram2410202@ssn.edu.in',
-        'nahypin17@gmail.com',
-        'roopavathik@ssnifound.in',
       ]);
 
       this.state = {
@@ -147,6 +175,9 @@ class RealtimeStore {
         isRealtimeConnected: true,
         isSyncing: false,
         lastSyncTime: new Date(),
+        onlineUsers: [],
+        liveCollaborationAlert: null,
+        recentTaskActions: {},
       };
 
       this.recalculateAllMilestoneProgress();
@@ -170,6 +201,8 @@ class RealtimeStore {
         });
       }
     }
+
+    this.setupLifecycleListeners();
   }
 
   public subscribe(listener: Listener): () => void {
@@ -369,7 +402,6 @@ class RealtimeStore {
 
   public async activateInvitedAccount(
     email: string,
-    activationCode: string,
     password: string
   ): Promise<{ success: boolean; message: string }> {
     const supabase = getSupabaseClient();
@@ -378,13 +410,49 @@ class RealtimeStore {
     }
 
     const cleanEmail = email.trim().toLowerCase();
-    const cleanCode = activationCode.trim().toUpperCase();
+
+    // 1. Try secure Postgres RPC if installed
+    try {
+      const { data: rpcData, error: rpcError } = await supabase.rpc('set_member_password', {
+        target_email: cleanEmail,
+        new_password: password,
+      });
+
+      if (!rpcError && rpcData?.success) {
+        return await this.signInWithPassword(cleanEmail, password);
+      }
+    } catch {
+      // RPC not yet installed or failed, proceed to next methods
+    }
+
+    // 2. Try standard signUp (works if account hasn't been created yet in auth.users)
+    try {
+      const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password,
+      });
+
+      if (!signUpErr && signUpData.user) {
+        // Automatically try to sign in
+        const signInRes = await this.signInWithPassword(cleanEmail, password);
+        if (signInRes.success) {
+          return signInRes;
+        }
+      }
+    } catch {
+      // Continue to Edge Function
+    }
+
+    // 3. Invoke activate-invite Edge Function
     const { data, error } = await supabase.functions.invoke('activate-invite', {
-      body: { email: cleanEmail, activationCode: cleanCode, password },
+      body: {
+        email: cleanEmail,
+        password,
+      },
     });
 
     if (error) {
-      let msg = error.message || 'Failed to activate account.';
+      let msg = error.message || 'Failed to set up account.';
       try {
         const ctx = (error as any)?.context;
         if (ctx && typeof ctx.json === 'function') {
@@ -394,11 +462,22 @@ class RealtimeStore {
       } catch {
         // ignore parse error
       }
+
+      if (msg.toLowerCase().includes('activation code')) {
+        msg =
+          'Your Supabase Edge Function in the cloud is still running the old code with activation codes. Please deploy the updated activate-invite function using: supabase functions deploy activate-invite --no-verify-jwt (or run the set_member_password SQL snippet in Supabase SQL editor).';
+      }
+
       return { success: false, message: msg };
     }
 
     if (data?.error) {
-      return { success: false, message: data.error };
+      let msg = data.error;
+      if (msg.toLowerCase().includes('activation code')) {
+        msg =
+          'Your Supabase Edge Function in the cloud is still running the old code with activation codes. Please deploy the updated activate-invite function using: supabase functions deploy activate-invite --no-verify-jwt (or run the set_member_password SQL snippet in Supabase SQL editor).';
+      }
+      return { success: false, message: msg };
     }
 
     return await this.signInWithPassword(cleanEmail, password);
@@ -575,13 +654,19 @@ class RealtimeStore {
 
     const activeRows = (wmRes.data || []).filter((r: any) => r.status === 'active');
     const invitedEmails = (wmRes.data || [])
-      .filter((r: any) => r.status === 'invited' && r.invited_email)
+      .filter(
+        (r: any) =>
+          r.status === 'invited' &&
+          r.invited_email &&
+          !String(r.invited_email).toLowerCase().includes('nahypin')
+      )
       .map((r: any) => String(r.invited_email).toLowerCase());
-    if (invitedEmails.length > 0) {
-      this.state.allowedEmails = Array.from(
-        new Set([...this.state.allowedEmails, ...invitedEmails])
-      );
-    }
+
+    const combinedAllowed = Array.from(
+      new Set([...this.state.allowedEmails, ...invitedEmails])
+    ).filter((email) => !email.toLowerCase().includes('nahypin'));
+
+    this.state.allowedEmails = combinedAllowed;
 
     const memberIds = activeRows.map((r: any) => r.user_id).filter(Boolean);
     let teamMembers: Member[] = [];
@@ -628,51 +713,110 @@ class RealtimeStore {
     // 4. Load all 9 project tables for this workspace
     await this.refreshWorkspaceData(workspaceId);
 
-    // 5. Subscribe to Realtime postgres_changes
+    // 5. Subscribe to Realtime channel with Broadcast, Presence and resilient Postgres changes
     if (this.supabaseSubscription) {
-      await supabase.removeChannel(this.supabaseSubscription);
+      try {
+        await supabase.removeChannel(this.supabaseSubscription);
+      } catch {}
       this.supabaseSubscription = null;
     }
 
-    const filter = `workspace_id=eq.${workspaceId}`;
-    this.supabaseSubscription = supabase
-      .channel(`spiceguard-ws-${workspaceId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'milestones', filter }, (payload) => {
-        this.handleMilestoneRealtime(payload);
+    const channel = supabase.channel(`spiceguard-ws-${workspaceId}`, {
+      config: {
+        broadcast: { self: false },
+        presence: { key: this.state.currentUser.email || this.state.currentUser.id },
+      },
+    });
+
+    channel
+      .on('broadcast', { event: 'TASK_MUTATION' }, ({ payload }) => {
+        this.handleBroadcastTask(payload);
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'milestone_date_history', filter }, () => {
+      .on('broadcast', { event: 'MILESTONE_MUTATION' }, ({ payload }) => {
+        this.handleBroadcastMilestone(payload);
+      })
+      .on('broadcast', { event: 'ACTIVITY_LOG' }, ({ payload }) => {
+        this.handleBroadcastActivity(payload);
+      })
+      .on('broadcast', { event: 'NOTIFICATION' }, ({ payload }) => {
+        if (payload?.notif) {
+          this.handleNotificationRealtime({ eventType: 'INSERT', new: payload.notif });
+        }
+      })
+      .on('broadcast', { event: 'SYNC_TRIGGER' }, () => {
         this.refreshWorkspaceData(workspaceId);
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks', filter }, (payload) => {
-        this.handleTaskRealtime(payload);
+      .on('presence', { event: 'sync' }, () => {
+        this.handlePresenceSync(channel.presenceState());
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'task_comments', filter }, (payload) => {
-        this.handleCommentRealtime(payload);
+      .on('presence', { event: 'join' }, () => {
+        this.handlePresenceSync(channel.presenceState());
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings', filter }, (payload) => {
-        this.handleMeetingRealtime(payload);
+      .on('presence', { event: 'leave' }, () => {
+        this.handlePresenceSync(channel.presenceState());
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'meeting_action_items', filter }, () => {
+      // Database change events without restrictive filter:
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'milestones' }, (payload) => {
+        if (this.isPayloadForCurrentWorkspace(payload, workspaceId)) {
+          this.handleMilestoneRealtime(payload);
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'milestone_date_history' }, () => {
         this.refreshWorkspaceData(workspaceId);
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'documents', filter }, (payload) => {
-        this.handleDocumentRealtime(payload);
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, (payload) => {
+        if (this.isPayloadForCurrentWorkspace(payload, workspaceId)) {
+          this.handleTaskRealtime(payload);
+        }
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter }, (payload) => {
-        this.handleNotificationRealtime(payload);
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'task_comments' }, (payload) => {
+        if (this.isPayloadForCurrentWorkspace(payload, workspaceId)) {
+          this.handleCommentRealtime(payload);
+        }
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'activity_log', filter }, (payload) => {
-        this.handleActivityRealtime(payload);
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, (payload) => {
+        if (this.isPayloadForCurrentWorkspace(payload, workspaceId)) {
+          this.handleMeetingRealtime(payload);
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'meeting_action_items' }, () => {
+        this.refreshWorkspaceData(workspaceId);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'documents' }, (payload) => {
+        if (this.isPayloadForCurrentWorkspace(payload, workspaceId)) {
+          this.handleDocumentRealtime(payload);
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, (payload) => {
+        if (this.isPayloadForCurrentWorkspace(payload, workspaceId)) {
+          this.handleNotificationRealtime(payload);
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'activity_log' }, (payload) => {
+        if (this.isPayloadForCurrentWorkspace(payload, workspaceId)) {
+          this.handleActivityRealtime(payload);
+        }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, (payload) => {
         this.handleProfileRealtime(payload);
       })
-      .subscribe((status) => {
+      .subscribe(async (status) => {
         this.state.isRealtimeConnected = status === 'SUBSCRIBED';
+        if (status === 'SUBSCRIBED') {
+          try {
+            await channel.track({
+              email: this.state.currentUser.email,
+              full_name: this.state.currentUser.full_name,
+              online_at: new Date().toISOString(),
+            });
+          } catch {}
+        }
         this.state.isSyncing = false;
         this.state.lastSyncTime = new Date();
         this.notify();
       });
+
+    this.supabaseSubscription = channel;
   }
 
   public async refreshWorkspaceData(wsId?: string): Promise<void> {
@@ -757,6 +901,22 @@ class RealtimeStore {
       const n = payload.new as NotificationItem;
       if (!this.state.notifications.some((x) => x.id === n.id)) {
         this.state.notifications = [n, ...this.state.notifications];
+        const isForMe = !n.user_email || n.user_email.toLowerCase() === this.state.currentUser.email.toLowerCase();
+        if (isForMe) {
+          playNotificationChime();
+          if (
+            typeof window !== 'undefined' &&
+            'Notification' in window &&
+            Notification.permission === 'granted'
+          ) {
+            try {
+              new Notification(n.title, {
+                body: n.message,
+                icon: '/favicon.ico',
+              });
+            } catch {}
+          }
+        }
         this.notify();
       }
     } else if (payload.eventType === 'UPDATE') {
@@ -836,6 +996,257 @@ class RealtimeStore {
     }
   }
 
+  private isPayloadForCurrentWorkspace(payload: any, workspaceId: string): boolean {
+    const row = payload.new || payload.old;
+    if (!row) return true;
+    if (row.workspace_id && row.workspace_id !== workspaceId) return false;
+    return true;
+  }
+
+  public setLiveAlert(message: string, actor: string): void {
+    if (this.liveAlertTimeout) {
+      clearTimeout(this.liveAlertTimeout);
+      this.liveAlertTimeout = null;
+    }
+
+    this.state.liveCollaborationAlert = {
+      id: 'alert-' + Date.now(),
+      message,
+      actor,
+      timestamp: Date.now(),
+    };
+    this.notify();
+
+    this.liveAlertTimeout = setTimeout(() => {
+      this.state.liveCollaborationAlert = null;
+      this.notify();
+    }, 4500);
+  }
+
+  public dismissLiveAlert(): void {
+    if (this.liveAlertTimeout) {
+      clearTimeout(this.liveAlertTimeout);
+      this.liveAlertTimeout = null;
+    }
+    this.state.liveCollaborationAlert = null;
+    this.notify();
+  }
+
+  public broadcastEvent(event: string, payload: any): void {
+    if (this.supabaseSubscription) {
+      try {
+        this.supabaseSubscription.send({
+          type: 'broadcast',
+          event,
+          payload,
+        });
+      } catch (e) {
+        console.warn('Realtime broadcast error:', e);
+      }
+    }
+
+    if (this.broadcastChannel) {
+      try {
+        this.broadcastChannel.postMessage({ type: event, payload });
+      } catch {}
+    }
+  }
+
+  private handleBroadcastTask(payload: any): void {
+    const { action, task, actor, message } = payload;
+    if (!task || !task.id) return;
+
+    if (action === 'delete') {
+      this.state.tasks = this.state.tasks.filter((t) => t.id !== task.id);
+    } else if (action === 'create') {
+      if (!this.state.tasks.some((t) => t.id === task.id)) {
+        this.state.tasks = [...this.state.tasks, task];
+      }
+    } else {
+      this.state.tasks = this.state.tasks.map((t) => (t.id === task.id ? { ...t, ...task } : t));
+    }
+
+    if (task.milestone_id) {
+      this.recalculateMilestoneProgress(task.milestone_id);
+    }
+
+    this.state.recentTaskActions[task.id] = {
+      actor: actor || 'Team',
+      action: action || 'updated',
+      timestamp: Date.now(),
+    };
+
+    if (actor && actor.toLowerCase() !== this.state.currentUser.full_name.toLowerCase()) {
+      const alertMsg = message || `⚡ ${actor} ${action === 'reopen' ? 'reopened' : action === 'complete' ? 'completed' : 'updated'} "${task.title}"`;
+      this.setLiveAlert(alertMsg, actor);
+      playNotificationChime();
+    }
+
+    this.notify();
+  }
+
+  private handleBroadcastMilestone(payload: any): void {
+    const { milestone, actor, message } = payload;
+    if (!milestone || !milestone.id) return;
+
+    this.state.milestones = this.state.milestones.map((m) =>
+      m.id === milestone.id ? { ...m, ...milestone } : m
+    );
+
+    if (actor && actor.toLowerCase() !== this.state.currentUser.full_name.toLowerCase()) {
+      this.setLiveAlert(message || `⚡ ${actor} updated milestone "${milestone.title}"`, actor);
+      playNotificationChime();
+    }
+
+    this.notify();
+  }
+
+  private handleBroadcastActivity(payload: any): void {
+    const item = payload.item as ActivityLogItem;
+    if (item && item.id) {
+      if (!this.state.activityLog.some((a) => a.id === item.id)) {
+        this.state.activityLog = [item, ...this.state.activityLog].slice(0, 50);
+        this.notify();
+      }
+    }
+  }
+
+  private handlePresenceSync(presenceState: any): void {
+    if (!presenceState) return;
+    const users: { email: string; full_name: string; online_at: string }[] = [];
+    Object.keys(presenceState).forEach((key) => {
+      const presences = presenceState[key] || [];
+      presences.forEach((p: any) => {
+        if (p.email && !users.some((u) => u.email.toLowerCase() === p.email.toLowerCase())) {
+          users.push({
+            email: p.email,
+            full_name: p.full_name || p.email,
+            online_at: p.online_at || new Date().toISOString(),
+          });
+        }
+      });
+    });
+    this.state.onlineUsers = users;
+    this.notify();
+  }
+
+  private setupLifecycleListeners(): void {
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          // Instantly refresh workspace data when user returns to app / unlocks phone
+          this.refreshWorkspaceData();
+          this.reconnectRealtimeIfNeeded();
+        }
+      });
+      window.addEventListener('focus', () => {
+        this.refreshWorkspaceData();
+      });
+    }
+
+    if (typeof window !== 'undefined' && !this.syncPollingInterval) {
+      // 4.5-second lightweight polling fallback
+      this.syncPollingInterval = setInterval(() => {
+        if (
+          this.state.authStatus === 'authenticated' &&
+          this.state.workspaceId &&
+          typeof document !== 'undefined' &&
+          document.visibilityState === 'visible' &&
+          !this.state.isSyncing
+        ) {
+          this.backgroundSync();
+        }
+      }, 4500);
+    }
+  }
+
+  public async backgroundSync(): Promise<void> {
+    const supabase = getSupabaseClient();
+    const workspaceId = this.state.workspaceId;
+    if (!supabase || !workspaceId) return;
+
+    try {
+      const [tRes, mRes, aRes, nRes] = await Promise.all([
+        supabase.from('tasks').select('*').eq('workspace_id', workspaceId).order('sort_order', { ascending: true }),
+        supabase.from('milestones').select('*').eq('workspace_id', workspaceId).order('sort_order', { ascending: true }),
+        supabase.from('activity_log').select('*').eq('workspace_id', workspaceId).order('created_at', { ascending: false }).limit(50),
+        supabase.from('notifications').select('*').eq('workspace_id', workspaceId).order('created_at', { ascending: false }),
+      ]);
+
+      let changed = false;
+
+      if (tRes.data) {
+        const serverTasks = tRes.data as Task[];
+        const hasTaskDiff =
+          serverTasks.length !== this.state.tasks.length ||
+          serverTasks.some((st) => {
+            const local = this.state.tasks.find((lt) => lt.id === st.id);
+            return !local || local.status !== st.status || local.updated_at !== st.updated_at;
+          });
+
+        if (hasTaskDiff) {
+          this.state.tasks = serverTasks;
+          this.recalculateAllMilestoneProgress();
+          changed = true;
+        }
+      }
+
+      if (mRes.data) {
+        const serverMilestones = mRes.data as Milestone[];
+        const hasMilestoneDiff =
+          serverMilestones.length !== this.state.milestones.length ||
+          serverMilestones.some((sm) => {
+            const local = this.state.milestones.find((lm) => lm.id === sm.id);
+            return !local || local.status !== sm.status || local.progress_percentage !== sm.progress_percentage;
+          });
+
+        if (hasMilestoneDiff) {
+          this.state.milestones = serverMilestones;
+          changed = true;
+        }
+      }
+
+      if (aRes.data) {
+        const serverActivity = aRes.data as ActivityLogItem[];
+        if (
+          serverActivity.length > 0 &&
+          (!this.state.activityLog[0] || serverActivity[0].id !== this.state.activityLog[0].id)
+        ) {
+          this.state.activityLog = serverActivity;
+          changed = true;
+        }
+      }
+
+      if (nRes.data) {
+        const serverNotifs = nRes.data as NotificationItem[];
+        if (serverNotifs.length !== this.state.notifications.length) {
+          this.state.notifications = serverNotifs;
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        this.notify();
+      }
+    } catch {
+      // background sync is silent
+    }
+  }
+
+  private reconnectRealtimeIfNeeded(): void {
+    if (!this.state.workspaceId || !isSupabaseConfigured()) return;
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    if (
+      !this.supabaseSubscription ||
+      this.supabaseSubscription.state === 'closed' ||
+      this.supabaseSubscription.state === 'errored'
+    ) {
+      this.setupRealtimeSubscription(this.state.workspaceId);
+    }
+  }
+
   // --- GETTERS ---
   public getState(): StoreState {
     return this.state;
@@ -900,47 +1311,18 @@ class RealtimeStore {
         };
       }
 
-      const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-      const randBytes = new Uint8Array(8);
-      crypto.getRandomValues(randBytes);
-      const rawCode = Array.from(randBytes)
-        .map((b) => alphabet[b % alphabet.length])
-        .join('');
-      const formattedCode = `SG-${rawCode.slice(0, 4)}-${rawCode.slice(4, 8)}`;
-
-      const hashBuf = await crypto.subtle.digest(
-        'SHA-256',
-        new TextEncoder().encode(formattedCode)
-      );
-      const codeHash = Array.from(new Uint8Array(hashBuf))
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
-      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-
       const { error } = await supabase.from('workspace_members').insert({
         workspace_id: this.state.workspaceId,
         invited_email: clean,
         invited_role: role,
         invited_is_team_lead: isTeamLead,
         status: 'invited',
-        activation_code_hash: codeHash,
-        activation_code_expires_at: expiresAt,
       });
 
       if (error) {
         console.warn('Supabase Invite member warning:', error.message);
         return { success: false, message: error.message };
       }
-
-      if (!this.state.allowedEmails.includes(clean)) {
-        this.state.allowedEmails = [...this.state.allowedEmails, clean];
-      }
-      this.logActivity('ALLOWLIST_ADD', 'user', clean, `Invited ${clean} to workspace.`);
-      this.notify();
-      return {
-        success: true,
-        message: `Invitation saved for ${clean}. One-time activation code: ${formattedCode} (valid 7 days).`,
-      };
     }
 
     if (!this.state.allowedEmails.includes(clean)) {
@@ -949,44 +1331,6 @@ class RealtimeStore {
     this.logActivity('ALLOWLIST_ADD', 'user', clean, `Invited ${clean} to workspace.`);
     this.notify();
     return { success: true, message: `Invitation saved for ${clean}.` };
-  }
-
-  public async generateActivationCodeForInvite(
-    email: string
-  ): Promise<{ success: boolean; message: string; code?: string }> {
-    const clean = email.trim().toLowerCase();
-    const supabase = getSupabaseClient();
-    if (!supabase || !this.state.workspaceId) {
-      return { success: false, message: 'Supabase workspace is not connected.' };
-    }
-
-    const { data, error } = await supabase.functions.invoke('generate-invite-code', {
-      body: { workspaceId: this.state.workspaceId, email: clean },
-    });
-
-    if (error) {
-      let msg = error.message || 'Failed to generate activation code.';
-      try {
-        const ctx = (error as any)?.context;
-        if (ctx && typeof ctx.json === 'function') {
-          const body = await ctx.json();
-          if (body?.error) msg = body.error;
-        }
-      } catch {
-        // ignore parse error
-      }
-      return { success: false, message: msg };
-    }
-
-    if (data?.error || !data?.code) {
-      return { success: false, message: data?.error || 'Failed to generate activation code.' };
-    }
-
-    return {
-      success: true,
-      code: data.code,
-      message: `One-time code for ${clean}: ${data.code} (valid 7 days).`,
-    };
   }
 
   public async removeAllowedEmail(email: string): Promise<void> {
@@ -1378,6 +1722,13 @@ class RealtimeStore {
       }).then();
     }
 
+    this.broadcastEvent('TASK_MUTATION', {
+      action: 'create',
+      task: newTask,
+      actor: this.state.currentUser.full_name,
+      message: `⚡ ${this.state.currentUser.full_name} added task "${newTask.title}"`,
+    });
+
     this.notify();
     return { success: true, message: 'Task added successfully.', task: newTask };
   }
@@ -1450,22 +1801,134 @@ class RealtimeStore {
       }).eq('id', id).then();
     }
 
+    this.broadcastEvent('TASK_MUTATION', {
+      action: 'update',
+      task: updatedTask,
+      actor: this.state.currentUser.full_name,
+      message: `⚡ ${this.state.currentUser.full_name} updated task "${updatedTask.title}"`,
+    });
+
     this.notify();
     return { success: true, message: 'Task updated successfully.' };
   }
 
-  public toggleTaskStatus(id: string): { success: boolean; message: string; newStatus?: TaskStatus } {
+  public completeTaskWithDetails(
+    id: string,
+    details: {
+      completion_date?: string;
+      completion_details?: string;
+      completion_document_id?: string;
+      completion_document_title?: string;
+    }
+  ): { success: boolean; message: string; task?: Task } {
+    const task = this.state.tasks.find((t) => t.id === id);
+    if (!task) return { success: false, message: 'Task not found.' };
+
+    const actor = this.state.currentUser.full_name;
+    const completedAt = new Date().toISOString();
+    const completionDate = details.completion_date || new Date().toISOString().split('T')[0];
+
+    const updatedTask: Task = {
+      ...task,
+      status: 'Done',
+      completed_at: completedAt,
+      completion_date: completionDate,
+      completion_details: details.completion_details?.trim() || null,
+      completed_by_name: actor,
+      completion_document_id: details.completion_document_id || null,
+      completion_document_title: details.completion_document_title || null,
+      updated_by: this.state.currentUser.email,
+      updated_at: completedAt,
+    };
+
+    this.state.tasks = this.state.tasks.map((t) => (t.id === id ? updatedTask : t));
+    this.recalculateMilestoneProgress(task.milestone_id);
+
+    const docNote = details.completion_document_title
+      ? ` with document "${details.completion_document_title}"`
+      : '';
+    const dateNote = details.completion_date ? ` (Completed on ${details.completion_date})` : '';
+    const actionDesc = `${actor} completed task "${task.title}"${dateNote}${docNote}`;
+
+    this.state.recentTaskActions[id] = {
+      actor,
+      action: 'completed',
+      timestamp: Date.now(),
+    };
+
+    const activityItem = this.logActivity('STATUS', 'task', id, actionDesc);
+
+    // Notify other team members across the app
+    this.notifyTeamMembers(
+      'task_completed',
+      `Task Completed: ${task.title}`,
+      actionDesc,
+      this.state.currentUser.email
+    );
+
+    // ⚡ INSTANT WEBSOCKET BROADCAST to all devices in <100ms
+    this.broadcastEvent('TASK_MUTATION', {
+      action: 'complete',
+      task: updatedTask,
+      actor,
+      message: `⚡ ${actionDesc}`,
+    });
+
+    if (activityItem) {
+      this.broadcastEvent('ACTIVITY_LOG', { item: activityItem });
+    }
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      supabase
+        .from('tasks')
+        .update({
+          status: 'Done',
+          completed_at: completedAt,
+          completion_date: completionDate,
+          completion_details: updatedTask.completion_details,
+          completed_by_name: updatedTask.completed_by_name,
+          completion_document_id: updatedTask.completion_document_id,
+          completion_document_title: updatedTask.completion_document_title,
+          updated_by: updatedTask.updated_by,
+          updated_at: updatedTask.updated_at,
+        })
+        .eq('id', id)
+        .then();
+    }
+
+    this.notify();
+    return { success: true, message: actionDesc, task: updatedTask };
+  }
+
+  public toggleTaskStatus(
+    id: string,
+    expectedCurrentStatus?: TaskStatus
+  ): { success: boolean; message: string; newStatus?: TaskStatus } {
     const task = this.state.tasks.find((t) => t.id === id);
     if (!task) return { success: false, message: 'Task not found.' };
 
     const wasDone = task.status === 'Done';
     const newStatus: TaskStatus = wasDone ? 'Todo' : 'Done';
+
+    // Conflict Guard: If caller expected a specific status and it already changed (e.g. reopened on phone 10s ago)
+    if (expectedCurrentStatus && task.status !== expectedCurrentStatus) {
+      return {
+        success: false,
+        message: `Task was already ${task.status === 'Done' ? 'completed' : 'reopened'} by ${task.completed_by_name || 'a teammate'}.`,
+        newStatus: task.status,
+      };
+    }
+
     const completedAt = wasDone ? null : new Date().toISOString();
 
     const updatedTask: Task = {
       ...task,
       status: newStatus,
       completed_at: completedAt,
+      completion_date: wasDone ? null : task.completion_date || new Date().toISOString().split('T')[0],
+      completion_details: wasDone ? null : task.completion_details,
+      completed_by_name: wasDone ? null : this.state.currentUser.full_name,
       updated_by: this.state.currentUser.email,
       updated_at: new Date().toISOString(),
     };
@@ -1477,7 +1940,35 @@ class RealtimeStore {
     const actionDesc = wasDone
       ? `${actor} reopened task "${task.title}"`
       : `${actor} marked "${task.title}" as Done`;
-    this.logActivity('STATUS', 'task', id, actionDesc);
+
+    this.state.recentTaskActions[id] = {
+      actor,
+      action: wasDone ? 'reopened' : 'completed',
+      timestamp: Date.now(),
+    };
+
+    const activityItem = this.logActivity('STATUS', 'task', id, actionDesc);
+
+    if (!wasDone) {
+      this.notifyTeamMembers(
+        'task_completed',
+        `Task Completed: ${task.title}`,
+        `${actor} completed task "${task.title}"`,
+        this.state.currentUser.email
+      );
+    }
+
+    // ⚡ INSTANT WEBSOCKET BROADCAST to all connected devices in <100ms
+    this.broadcastEvent('TASK_MUTATION', {
+      action: wasDone ? 'reopen' : 'toggle',
+      task: updatedTask,
+      actor,
+      message: `⚡ ${actionDesc}`,
+    });
+
+    if (activityItem) {
+      this.broadcastEvent('ACTIVITY_LOG', { item: activityItem });
+    }
 
     const supabase = getSupabaseClient();
     if (supabase) {
@@ -1486,6 +1977,9 @@ class RealtimeStore {
         .update({
           status: newStatus,
           completed_at: completedAt,
+          completion_date: updatedTask.completion_date,
+          completion_details: updatedTask.completion_details,
+          completed_by_name: updatedTask.completed_by_name,
           updated_by: updatedTask.updated_by,
           updated_at: updatedTask.updated_at,
         })
@@ -1530,6 +2024,13 @@ class RealtimeStore {
     this.recalculateMilestoneProgress(task.milestone_id);
     this.logActivity('DELETE', 'task', id, `${this.state.currentUser.full_name} deleted task "${task.title}".`);
 
+    this.broadcastEvent('TASK_MUTATION', {
+      action: 'delete',
+      task,
+      actor: this.state.currentUser.full_name,
+      message: `⚡ ${this.state.currentUser.full_name} deleted task "${task.title}"`,
+    });
+
     this.notify();
     return { success: true, message: `Task "${task.title}" deleted. (Undo available for 10s)`, canUndo: true };
   }
@@ -1546,6 +2047,13 @@ class RealtimeStore {
     this.state.tasks = [...this.state.tasks, restoredTask];
     this.recalculateMilestoneProgress(restoredTask.milestone_id);
     this.logActivity('RESTORE', 'task', restoredTask.id, `${this.state.currentUser.full_name} restored task "${restoredTask.title}".`);
+
+    this.broadcastEvent('TASK_MUTATION', {
+      action: 'create',
+      task: restoredTask,
+      actor: this.state.currentUser.full_name,
+      message: `⚡ ${this.state.currentUser.full_name} restored task "${restoredTask.title}"`,
+    });
 
     this.notify();
     return { success: true, message: `Task "${restoredTask.title}" restored successfully.` };
@@ -1922,6 +2430,19 @@ class RealtimeStore {
     return { success: true, message: 'Document deleted.' };
   }
 
+  public notifyTeamMembers(
+    type: NotificationItem['type'],
+    title: string,
+    message: string,
+    excludeEmail?: string
+  ): void {
+    const recipients = this.state.teamMembers.length > 0 ? this.state.teamMembers : SEED_MEMBERS;
+    recipients.forEach((m) => {
+      if (excludeEmail && m.email.toLowerCase() === excludeEmail.toLowerCase()) return;
+      this.createNotification(type, title, message, m.email);
+    });
+  }
+
   // --- NOTIFICATIONS & ACTIVITY ---
   public createNotification(
     type: NotificationItem['type'],
@@ -1940,6 +2461,25 @@ class RealtimeStore {
       created_at: new Date().toISOString(),
     };
 
+    // If notification is for current user, trigger native browser notification if permitted
+    if (email.toLowerCase() === this.state.currentUser.email.toLowerCase()) {
+      playNotificationChime();
+      if (
+        typeof window !== 'undefined' &&
+        'Notification' in window &&
+        Notification.permission === 'granted'
+      ) {
+        try {
+          new Notification(title, {
+            body: message,
+            icon: '/favicon.ico',
+          });
+        } catch {
+          // Ignore native notification errors
+        }
+      }
+    }
+
     this.state.notifications = [notif, ...this.state.notifications].slice(0, 50);
 
     const supabase = getSupabaseClient();
@@ -1948,6 +2488,14 @@ class RealtimeStore {
     }
 
     this.notify();
+  }
+
+  public async requestNotificationPermission(): Promise<boolean> {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      const res = await Notification.requestPermission();
+      return res === 'granted';
+    }
+    return false;
   }
 
   public markNotificationAsRead(id: string): void {
@@ -1972,7 +2520,7 @@ class RealtimeStore {
     entity_type: ActivityLogItem['entity_type'],
     entity_id: string,
     details: string
-  ): void {
+  ): ActivityLogItem {
     const item: ActivityLogItem = {
       id: 'act-' + Date.now().toString(36) + Math.random().toString(36).substring(2, 5),
       actor_name: this.state.currentUser.full_name,
@@ -1989,6 +2537,8 @@ class RealtimeStore {
     if (supabase) {
       supabase.from('activity_log').insert(item).then();
     }
+
+    return item;
   }
 
   public resetToFactorySeed(): void {
