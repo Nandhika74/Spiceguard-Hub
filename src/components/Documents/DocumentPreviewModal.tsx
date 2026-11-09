@@ -4,16 +4,31 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { DocumentItem } from '../../types';
 import { formatDate } from '../../lib/dateUtils';
 import { isBlobUrl, getSignedDocumentUrl, downloadDocumentBlob } from '../../lib/storage';
-import { FileText, Download, ExternalLink, X, AlertCircle } from 'lucide-react';
+import { useRealtimeStore } from '../../hooks/useRealtimeStore';
+import { FileText, Download, ExternalLink, X, AlertCircle, Trash2 } from 'lucide-react';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 interface DocumentPreviewModalProps {
   document: DocumentItem | null;
   onClose: () => void;
+  onDelete?: (doc: DocumentItem) => void;
 }
 
-export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({ document, onClose }) => {
+export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
+  document,
+  onClose,
+  onDelete,
+}) => {
+  const { documents } = useRealtimeStore();
+
+  // If this document is deleted from store while preview is open, immediately close preview
+  useEffect(() => {
+    if (document && !documents.some((d) => d.id === document.id)) {
+      onClose();
+    }
+  }, [documents, document?.id, onClose]);
+
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [imageBlobUrl, setImageBlobUrl] = useState<string | null>(null);
   const [pdfBuffer, setPdfBuffer] = useState<ArrayBuffer | null>(null);
@@ -201,7 +216,23 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({ docu
                 <span>Download</span>
               </a>
             )}
-            <button onClick={onClose} className="text-stone-400 hover:text-white p-1">
+            {onDelete && (
+              <button
+                type="button"
+                onClick={() => onDelete(document)}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-red-950/70 hover:bg-red-900 text-red-200 hover:text-white text-xs font-medium transition cursor-pointer"
+                title="Delete this document"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Delete</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-stone-400 hover:text-white p-1 rounded-md transition"
+              title="Close preview"
+            >
               <X className="w-5 h-5" />
             </button>
           </div>

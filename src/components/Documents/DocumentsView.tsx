@@ -4,6 +4,7 @@ import { useRealtimeStore } from '../../hooks/useRealtimeStore';
 import { formatDate } from '../../lib/dateUtils';
 import { DocumentUploadModal } from './DocumentUploadModal';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
+import { ConfirmDeleteModal } from '../ui/ConfirmDeleteModal';
 import {
   FileText,
   Plus,
@@ -29,6 +30,7 @@ export const DocumentsView: React.FC = () => {
   const [docToEdit, setDocToEdit] = useState<DocumentItem | null>(null);
   const [previewDoc, setPreviewDoc] = useState<DocumentItem | null>(null);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+  const [docToDelete, setDocToDelete] = useState<DocumentItem | null>(null);
 
   const openPreview = (document: DocumentItem) => {
     console.debug('[DocumentPreview] opening document', {
@@ -168,63 +170,78 @@ export const DocumentsView: React.FC = () => {
                       <FileText className="w-4 h-4" />
                     </div>
 
-                    <div className="relative" onClick={(e) => e.stopPropagation()}>
+                    <div className="relative">
                       <button
-                        onClick={() =>
-                          setActiveMenuId(activeMenuId === doc.id ? null : doc.id)
-                        }
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveMenuId(activeMenuId === doc.id ? null : doc.id);
+                        }}
                         className="p-1 text-stone-400 hover:text-stone-700 rounded-lg transition"
+                        title="Document options"
+                        aria-label="Document options"
                       >
                         <MoreHorizontal className="w-4 h-4" />
                       </button>
 
                       {activeMenuId === doc.id && (
-                        <div className="absolute right-0 top-6 w-36 rounded-xl bg-white shadow-lg border border-stone-200 py-1 z-20 text-xs">
-                          <button
-                            onClick={() => {
+                        <>
+                          <div
+                            className="fixed inset-0 z-30 bg-transparent cursor-default select-none"
+                            onClick={(e) => {
+                              e.stopPropagation();
                               setActiveMenuId(null);
-                              openPreview(doc);
                             }}
-                            className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2"
-                          >
-                            <Eye className="w-3.5 h-3.5 text-stone-400" />
-                            Preview
-                          </button>
-                          <button
-                            onClick={() => {
+                            onTouchStart={(e) => {
+                              e.stopPropagation();
                               setActiveMenuId(null);
-                              setDocToEdit(doc);
-                              setUploadModalOpen(true);
                             }}
-                            className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2"
-                          >
-                            <Edit2 className="w-3.5 h-3.5 text-stone-400" />
-                            Edit
-                          </button>
-                          <a
-                            href={doc.file_url}
-                            download={doc.file_name}
-                            target="_blank"
-                            rel="noreferrer"
-                            onClick={() => setActiveMenuId(null)}
-                            className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2"
-                          >
-                            <Download className="w-3.5 h-3.5 text-stone-400" />
-                            Download
-                          </a>
-                          <button
-                            onClick={() => {
-                              setActiveMenuId(null);
-                              if (confirm(`Delete document "${doc.title}"?`)) {
-                                deleteDocument(doc.id);
-                              }
-                            }}
-                            className="w-full px-3 py-1.5 text-left text-red-600 hover:bg-red-50 flex items-center gap-2"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            Delete
-                          </button>
-                        </div>
+                            aria-hidden="true"
+                          />
+                          <div className="absolute right-0 top-6 w-36 rounded-xl bg-white shadow-xl border border-stone-200 py-1.5 z-40 text-xs animate-scaleIn">
+                            <button
+                              onClick={() => {
+                                setActiveMenuId(null);
+                                openPreview(doc);
+                              }}
+                              className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2 cursor-pointer"
+                            >
+                              <Eye className="w-3.5 h-3.5 text-stone-400" />
+                              Preview
+                            </button>
+                            <button
+                              onClick={() => {
+                                setActiveMenuId(null);
+                                setDocToEdit(doc);
+                                setUploadModalOpen(true);
+                              }}
+                              className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2 cursor-pointer"
+                            >
+                              <Edit2 className="w-3.5 h-3.5 text-stone-400" />
+                              Edit
+                            </button>
+                            <a
+                              href={doc.file_url}
+                              download={doc.file_name}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={() => setActiveMenuId(null)}
+                              className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2 cursor-pointer"
+                            >
+                              <Download className="w-3.5 h-3.5 text-stone-400" />
+                              Download
+                            </a>
+                            <button
+                              onClick={() => {
+                                setActiveMenuId(null);
+                                setDocToDelete(doc);
+                              }}
+                              className="w-full px-3 py-1.5 text-left text-red-600 hover:bg-red-50 flex items-center gap-2 cursor-pointer font-medium border-t border-stone-100"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              Delete
+                            </button>
+                          </div>
+                        </>
                       )}
                     </div>
                   </div>
@@ -296,10 +313,20 @@ export const DocumentsView: React.FC = () => {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+              <div
+                className="flex items-center gap-2"
+                onClick={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+                onTouchEnd={(e) => e.stopPropagation()}
+              >
                 <button
-                  onClick={() => setPreviewDoc(doc)}
-                  className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 hover:bg-stone-100"
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPreviewDoc(doc);
+                  }}
+                  className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition"
+                  title="Preview Document"
                 >
                   <Eye className="w-4 h-4" />
                 </button>
@@ -308,17 +335,20 @@ export const DocumentsView: React.FC = () => {
                   download={doc.file_name}
                   target="_blank"
                   rel="noreferrer"
-                  className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 hover:bg-stone-100"
+                  onClick={(e) => e.stopPropagation()}
+                  className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition"
+                  title="Download File"
                 >
                   <Download className="w-4 h-4" />
                 </a>
                 <button
-                  onClick={() => {
-                    if (confirm(`Delete document "${doc.title}"?`)) {
-                      deleteDocument(doc.id);
-                    }
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    setDocToDelete(doc);
                   }}
-                  className="p-1.5 rounded-lg text-stone-400 hover:text-red-600 hover:bg-red-50 transition"
+                  className="p-1.5 rounded-lg text-stone-400 hover:text-red-600 hover:bg-red-50 transition cursor-pointer"
                   title="Delete Document"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -340,6 +370,26 @@ export const DocumentsView: React.FC = () => {
       <DocumentPreviewModal
         document={previewDoc}
         onClose={() => setPreviewDoc(null)}
+        onDelete={(doc) => setDocToDelete(doc)}
+      />
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmDeleteModal
+        isOpen={Boolean(docToDelete)}
+        title="Delete Document"
+        message={`Are you sure you want to delete "${docToDelete?.title}"? This action cannot be undone.`}
+        confirmLabel="Delete Document"
+        onConfirm={() => {
+          if (docToDelete) {
+            // Immediately close preview if it is the deleted document
+            if (previewDoc?.id === docToDelete.id) {
+              setPreviewDoc(null);
+            }
+            deleteDocument(docToDelete.id);
+            setDocToDelete(null);
+          }
+        }}
+        onCancel={() => setDocToDelete(null)}
       />
     </div>
   );

@@ -31,6 +31,7 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isOpen) return;
     if (taskToEdit) {
       setTargetMilestoneId(taskToEdit.milestone_id);
       setTitle(taskToEdit.title);
@@ -38,7 +39,7 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
       setDeadline(taskToEdit.deadline || '');
       setPriority(taskToEdit.priority);
       setStatus(taskToEdit.status);
-      setNotes(taskToEdit.notes || '');
+      setNotes((taskToEdit.notes || '').replace(/\s*<!--\s*spiceguard_completion:[\s\S]*?-->/g, '').trim());
     } else {
       setTargetMilestoneId(milestoneId || (milestones[0]?.id || ''));
       setTitle('');
@@ -49,7 +50,7 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
       setNotes('');
     }
     setErrorMsg(null);
-  }, [taskToEdit, milestoneId, isOpen, milestones, currentUser.email]);
+  }, [isOpen, taskToEdit?.id, milestoneId]);
 
   if (!isOpen) return null;
 

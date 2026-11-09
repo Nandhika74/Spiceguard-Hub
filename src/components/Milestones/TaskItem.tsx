@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Task, Milestone } from '../../types';
+import { Task, Milestone, DocumentItem } from '../../types';
 import { useRealtimeStore } from '../../hooks/useRealtimeStore';
 import { formatDate, getDeadlineStatus, timeAgo } from '../../lib/dateUtils';
 import { SEED_MEMBERS } from '../../lib/constants';
 import { TaskCompletionModal } from './TaskCompletionModal';
+import { DocumentPreviewModal } from '../Documents/DocumentPreviewModal';
 import {
   Check,
   Calendar,
@@ -21,6 +22,10 @@ import {
 interface TaskItemProps {
   task: Task;
   milestones: Milestone[];
+  isMenuOpen?: boolean;
+  onToggleMenu?: () => void;
+  onCloseMenu?: () => void;
+  onRequestDelete?: (task: Task) => void;
   onOpenComments: (task: Task) => void;
   onEditTask: (task: Task) => void;
 }
@@ -28,19 +33,28 @@ interface TaskItemProps {
 export const TaskItem: React.FC<TaskItemProps> = ({
   task,
   milestones: _milestones,
+  isMenuOpen,
+  onToggleMenu,
+  onCloseMenu,
+  onRequestDelete,
   onOpenComments: _onOpenComments,
   onEditTask,
 }) => {
-  const { toggleTaskStatus, deleteTask } = useRealtimeStore();
-  const [showMenu, setShowMenu] = useState(false);
+  const { toggleTaskStatus, deleteTask, recentTaskActions, documents } = useRealtimeStore();
+  const [internalShowMenu, setInternalShowMenu] = useState(false);
   const [showCompletionModal, setShowCompletionModal] = useState(false);
   const [showDetailsExpanded, setShowDetailsExpanded] = useState(true);
+  const [previewDoc, setPreviewDoc] = useState<DocumentItem | null>(null);
+
+  const isMenuVisible = isMenuOpen !== undefined ? isMenuOpen : internalShowMenu;
+  const toggleMenu = onToggleMenu || (() => setInternalShowMenu((prev) => !prev));
+  const closeMenu = onCloseMenu || (() => setInternalShowMenu(false));
 
   useEffect(() => {
-    if (!showMenu) return;
-    const handleClose = () => setShowMenu(false);
+    if (!isMenuVisible) return;
+    const handleClose = () => closeMenu();
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setShowMenu(false);
+      if (e.key === 'Escape') closeMenu();
     };
     window.addEventListener('click', handleClose);
     window.addEventListener('keydown', handleKeyDown);
@@ -48,10 +62,14 @@ export const TaskItem: React.FC<TaskItemProps> = ({
       window.removeEventListener('click', handleClose);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [showMenu]);
+  }, [isMenuVisible, closeMenu]);
 
   const isDone = task.status === 'Done';
   const { isOverdue, daysRemaining } = getDeadlineStatus(task.deadline, isDone);
+  const recentAction = recentTaskActions[task.id];
+  const isRecentAction = Boolean(
+    recentAction && Date.now() - recentAction.timestamp < 120000
+  );
 
   const assigneeMember = SEED_MEMBERS.find(
     (m) =>
@@ -61,8 +79,8 @@ export const TaskItem: React.FC<TaskItemProps> = ({
 
   const handleToggle = () => {
     if (isDone) {
-      // Reopen task
-      toggleTaskStatus(task.id);
+      // Reopen task with expected status guard against concurrent conflicting edits
+      toggleTaskStatus(task.id, 'Done');
     } else {
       // Open modal to record completion/visit date, notes, and document
       setShowCompletionModal(true);
@@ -141,11 +159,21 @@ export const TaskItem: React.FC<TaskItemProps> = ({
             >
               {task.title}
             </h4>
-            <p className="text-[10px] text-stone-400 mt-0.5 truncate">
-              {task.assignee_name || 'Whole team'} · edited by{' '}
-              {task.updated_by === 'nandhikas3@gmail.com' ? 'Nandhika' : 'Team'}{' '}
-              {timeAgo(task.updated_at)}
-            </p>
+            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+              <p className="text-[10px] text-stone-400 truncate">
+                {task.assignee_name || 'Whole team'} · edited by{' '}
+                {task.updated_by === 'nandhikas3@gmail.com' ? 'Nandhika' : 'Team'}{' '}
+                {timeAgo(task.updated_at)}
+              </p>
+              {isRecentAction && recentAction && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-800 bg-emerald-100/90 px-1.5 py-0.2 rounded-full border border-emerald-300 shadow-2xs">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
+                  <span>
+                    ⚡ {recentAction.actor} {recentAction.action}
+                  </span>
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -181,51 +209,76 @@ export const TaskItem: React.FC<TaskItemProps> = ({
           </div>
 
           {/* Options */}
-          <div className="relative" onClick={(e) => e.stopPropagation()}>
+          <div className="relative">
             <button
-              onClick={() => setShowMenu(!showMenu)}
-              className="p-1 text-stone-300 hover:text-stone-700 rounded-lg"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleMenu();
+              }}
+              className={`p-1.5 rounded-lg transition active:scale-90 ${
+                isMenuVisible ? 'text-stone-800 bg-stone-100' : 'text-stone-300 hover:text-stone-700 hover:bg-stone-100/60'
+              }`}
+              title="Task options"
+              aria-label="Task options"
             >
               <MoreVertical className="w-3.5 h-3.5" />
             </button>
 
-            {showMenu && (
-              <div className="absolute right-0 top-6 w-48 rounded-xl bg-white shadow-lg border border-stone-200 py-1 z-20 text-xs">
-                {isDone && (
+            {isMenuVisible && (
+              <>
+                {/* Full-screen backdrop: touching/clicking anywhere outside immediately closes the menu */}
+                <div
+                  className="fixed inset-0 z-30 bg-transparent cursor-default select-none"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeMenu();
+                  }}
+                  onTouchStart={(e) => {
+                    e.stopPropagation();
+                    closeMenu();
+                  }}
+                  aria-hidden="true"
+                />
+
+                <div className="absolute right-0 top-7 w-48 rounded-xl bg-white shadow-2xl border border-stone-200 py-1.5 z-40 text-xs animate-scaleIn">
+                  {isDone && (
+                    <button
+                      onClick={() => {
+                        closeMenu();
+                        setShowCompletionModal(true);
+                      }}
+                      className="w-full px-3 py-1.5 text-left text-emerald-800 hover:bg-emerald-50 flex items-center gap-2 font-medium cursor-pointer"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                      Edit Completion Details
+                    </button>
+                  )}
                   <button
                     onClick={() => {
-                      setShowMenu(false);
-                      setShowCompletionModal(true);
+                      closeMenu();
+                      onEditTask(task);
                     }}
-                    className="w-full px-3 py-1.5 text-left text-emerald-800 hover:bg-emerald-50 flex items-center gap-2 font-medium"
+                    className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2 cursor-pointer"
                   >
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                    Edit Completion Details
+                    <Edit2 className="w-3.5 h-3.5 text-stone-400" />
+                    Edit Task
                   </button>
-                )}
-                <button
-                  onClick={() => {
-                    setShowMenu(false);
-                    onEditTask(task);
-                  }}
-                  className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2"
-                >
-                  <Edit2 className="w-3.5 h-3.5 text-stone-400" />
-                  Edit Task
-                </button>
-                <button
-                  onClick={() => {
-                    setShowMenu(false);
-                    if (confirm(`Delete task "${task.title}"?`)) {
-                      deleteTask(task.id);
-                    }
-                  }}
-                  className="w-full px-3 py-1.5 text-left text-red-600 hover:bg-red-50 flex items-center gap-2"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  Delete
-                </button>
-              </div>
+                  <button
+                    onClick={() => {
+                      closeMenu();
+                      if (onRequestDelete) {
+                        onRequestDelete(task);
+                      } else {
+                        deleteTask(task.id);
+                      }
+                    }}
+                    className="w-full px-3 py-1.5 text-left text-red-600 hover:bg-red-50 flex items-center gap-2 cursor-pointer font-medium"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Delete
+                  </button>
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -287,24 +340,39 @@ export const TaskItem: React.FC<TaskItemProps> = ({
               <p className="whitespace-pre-line">{task.completion_details}</p>
             </div>
           )}
+          {/* Linked Research Document Chip (Only shown if document still exists in workspace documents) */}
+          {(() => {
+            const linkedDoc = documents.find(
+              (d) =>
+                (task.completion_document_id && d.id === task.completion_document_id) ||
+                (task.completion_document_title &&
+                  d.title.trim().toLowerCase() === task.completion_document_title.trim().toLowerCase())
+            );
 
-          {/* Linked Research Document Chip */}
-          {(task.completion_document_title || task.completion_document_id) && (
-            <div className="flex items-center gap-2 pt-0.5 flex-wrap">
-              <span className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">
-                Linked Document:
-              </span>
-              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-emerald-300 text-emerald-900 font-semibold text-xs shadow-2xs hover:bg-emerald-50 transition cursor-pointer">
-                <FileText className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
-                <span className="truncate max-w-[220px]">
-                  {task.completion_document_title || 'Attached Document'}
+            if (!linkedDoc) return null;
+
+            return (
+              <div className="flex items-center gap-2 pt-0.5 flex-wrap">
+                <span className="text-[10px] font-bold text-stone-500 uppercase tracking-wider">
+                  Linked Document:
                 </span>
-                <span className="text-[10px] text-emerald-600 bg-emerald-50 px-1.5 py-0.2 rounded font-normal">
-                  Docs section
-                </span>
+                <button
+                  type="button"
+                  onClick={() => setPreviewDoc(linkedDoc)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-emerald-300 hover:border-emerald-600 text-emerald-900 font-semibold text-xs shadow-2xs hover:bg-emerald-50 transition cursor-pointer"
+                  title="Click to preview document"
+                >
+                  <FileText className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                  <span className="truncate max-w-[220px]">
+                    {linkedDoc.title}
+                  </span>
+                  <span className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded font-normal">
+                    View doc
+                  </span>
+                </button>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       )}
 
@@ -314,6 +382,14 @@ export const TaskItem: React.FC<TaskItemProps> = ({
         isOpen={showCompletionModal}
         onClose={() => setShowCompletionModal(false)}
       />
+
+      {/* Document Preview Modal */}
+      {previewDoc && (
+        <DocumentPreviewModal
+          document={previewDoc}
+          onClose={() => setPreviewDoc(null)}
+        />
+      )}
     </div>
   );
 };

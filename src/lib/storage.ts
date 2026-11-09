@@ -6,6 +6,15 @@ export function isBlobUrl(url?: string | null): boolean {
   return Boolean(url && url.trim().startsWith('blob:'));
 }
 
+export function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = (err) => reject(err);
+    reader.readAsDataURL(file);
+  });
+}
+
 export async function uploadDocumentFile(
   workspaceId: string,
   docId: string,
@@ -13,7 +22,12 @@ export async function uploadDocumentFile(
 ): Promise<{ path: string | null; error?: string }> {
   const supabase = getSupabaseClient();
   if (!supabase) {
-    return { path: null, error: 'Supabase is not configured.' };
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      return { path: dataUrl };
+    } catch {
+      return { path: null, error: 'Supabase is not configured and file read failed.' };
+    }
   }
 
   try {
@@ -38,23 +52,50 @@ export async function uploadDocumentFile(
   const uniqueSuffix = Math.random().toString(36).substring(2, 7);
   const storagePath = `${workspaceId}/${docId}/${Date.now()}-${uniqueSuffix}-${safeName}`;
 
-  const { data, error } = await supabase.storage
-    .from(DOCUMENTS_BUCKET)
-    .upload(storagePath, file, {
-      cacheControl: '3600',
-      upsert: false,
-      contentType: file.type || 'application/octet-stream',
-    });
+  try {
+    const uploadPromise = supabase.storage
+      .from(DOCUMENTS_BUCKET)
+      .upload(storagePath, file, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType: file.type || 'application/octet-stream',
+      });
 
-  if (error) {
-    return { path: null, error: error.message };
+    const timeoutPromise = new Promise<{ data: null; error: { message: string } }>((resolve) =>
+      setTimeout(
+        () =>
+          resolve({
+            data: null,
+            error: { message: 'Storage upload timed out; switching to instant inline storage.' },
+          }),
+        3500
+      )
+    );
+
+    const { data, error } = await Promise.race([uploadPromise, timeoutPromise]);
+
+    if (error || !data) {
+      console.warn(
+        `[uploadDocumentFile] Storage upload fallback (${error?.message || 'no data'}). Saving inline Data URL.`
+      );
+      const dataUrl = await readFileAsDataUrl(file);
+      return { path: dataUrl };
+    }
+
+    return { path: data.path };
+  } catch (err: any) {
+    console.warn(`[uploadDocumentFile] Storage error (${err?.message || err}). Falling back to inline data URL.`);
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      return { path: dataUrl };
+    } catch {
+      return { path: null, error: err?.message || 'Storage upload failed' };
+    }
   }
-
-  return { path: data.path };
 }
 
 export async function deleteDocumentFile(pathOrUrl?: string | null): Promise<void> {
-  if (!pathOrUrl || isBlobUrl(pathOrUrl)) return;
+  if (!pathOrUrl || isBlobUrl(pathOrUrl) || pathOrUrl.startsWith('data:')) return;
   if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) return;
 
   const supabase = getSupabaseClient();
@@ -68,6 +109,16 @@ export async function downloadDocumentBlob(
 ): Promise<{ blob: Blob | null; error?: string }> {
   if (!pathOrUrl || isBlobUrl(pathOrUrl)) {
     return { blob: null, error: 'Invalid or expired local blob URL.' };
+  }
+
+  if (pathOrUrl.startsWith('data:')) {
+    try {
+      const resp = await fetch(pathOrUrl);
+      const blob = await resp.blob();
+      return { blob };
+    } catch {
+      return { blob: null, error: 'Failed to convert data URL to file.' };
+    }
   }
 
   if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
@@ -141,7 +192,7 @@ export async function getSignedDocumentUrl(
     return null;
   }
 
-  if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
+  if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://') || pathOrUrl.startsWith('data:')) {
     return pathOrUrl;
   }
 

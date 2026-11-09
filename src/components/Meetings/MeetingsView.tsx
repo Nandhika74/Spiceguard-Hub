@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 
 import { MeetingDetailModal } from './MeetingDetailModal';
+import { ConfirmDeleteModal } from '../ui/ConfirmDeleteModal';
 
 export const MeetingsView: React.FC = () => {
   const {
@@ -36,6 +37,7 @@ export const MeetingsView: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [meetingToEdit, setMeetingToEdit] = useState<Meeting | null>(null);
   const [detailMeeting, setDetailMeeting] = useState<Meeting | null>(null);
+  const [meetingToDelete, setMeetingToDelete] = useState<Meeting | null>(null);
 
   // Milestone selection for converting action items
   const [selectedMilestoneForConvert, setSelectedMilestoneForConvert] = useState<Record<string, string>>({});
@@ -210,12 +212,8 @@ export const MeetingsView: React.FC = () => {
                         <Edit2 className="w-3.5 h-3.5" />
                       </button>
                       <button
-                        onClick={() => {
-                          if (confirm(`Delete meeting log "${meeting.title}"?`)) {
-                            deleteMeeting(meeting.id);
-                          }
-                        }}
-                        className="p-1 text-stone-400 hover:text-red-600 rounded-md transition"
+                        onClick={() => setMeetingToDelete(meeting)}
+                        className="p-1 text-stone-400 hover:text-red-600 rounded-md transition cursor-pointer"
                         title="Delete Meeting"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -423,6 +421,21 @@ export const MeetingsView: React.FC = () => {
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
         meetingToEdit={meetingToEdit}
+      />
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmDeleteModal
+        isOpen={Boolean(meetingToDelete)}
+        title="Delete Meeting Log"
+        message={`Are you sure you want to delete "${meetingToDelete?.title}"? This action cannot be undone.`}
+        confirmLabel="Delete Meeting"
+        onConfirm={() => {
+          if (meetingToDelete) {
+            deleteMeeting(meetingToDelete.id);
+            setMeetingToDelete(null);
+          }
+        }}
+        onCancel={() => setMeetingToDelete(null)}
       />
     </div>
   );

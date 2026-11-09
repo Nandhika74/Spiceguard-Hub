@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { Meeting } from '../../types';
 import { useRealtimeStore } from '../../hooks/useRealtimeStore';
 import { Calendar, Trash2, Edit2, X, Plus, Check } from 'lucide-react';
+import { ConfirmDeleteModal } from '../ui/ConfirmDeleteModal';
+import { generateUuid } from '../../lib/realtimeStore';
 
 interface MeetingDetailModalProps {
   meeting: Meeting | null;
@@ -21,14 +23,12 @@ export const MeetingDetailModal: React.FC<MeetingDetailModalProps> = ({
   const [newActionText, setNewActionText] = useState('');
   const [newActionOwner, setNewActionOwner] = useState('Nandhika S');
   const [newActionDate, setNewActionDate] = useState('');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   if (!isOpen || !meeting) return null;
 
   const handleDelete = () => {
-    if (confirm(`Are you sure you want to delete "${meeting.title}"?`)) {
-      deleteMeeting(meeting.id);
-      onClose();
-    }
+    setShowDeleteConfirm(true);
   };
 
   const handleAddInlineAction = (e: React.FormEvent) => {
@@ -36,7 +36,7 @@ export const MeetingDetailModal: React.FC<MeetingDetailModalProps> = ({
     if (!newActionText.trim()) return;
 
     const newAction = {
-      id: 'act-' + Date.now().toString(36),
+      id: generateUuid(),
       meeting_id: meeting.id,
       text: newActionText.trim(),
       assignee: newActionOwner,
@@ -246,6 +246,19 @@ export const MeetingDetailModal: React.FC<MeetingDetailModalProps> = ({
           </span>
         </div>
       </div>
+
+      <ConfirmDeleteModal
+        isOpen={showDeleteConfirm}
+        title="Delete Meeting Log"
+        message={`Are you sure you want to delete "${meeting.title}"? This action cannot be undone.`}
+        confirmLabel="Delete Meeting"
+        onConfirm={() => {
+          deleteMeeting(meeting.id);
+          setShowDeleteConfirm(false);
+          onClose();
+        }}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
     </div>
   );
 };

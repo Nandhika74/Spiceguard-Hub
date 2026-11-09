@@ -29,6 +29,7 @@ export const MilestoneFormModal: React.FC<MilestoneFormModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isOpen) return;
     if (milestoneToEdit) {
       setTitle(milestoneToEdit.title);
       setDescription(milestoneToEdit.description || '');
@@ -49,7 +50,7 @@ export const MilestoneFormModal: React.FC<MilestoneFormModalProps> = ({
       setRescheduleReason('');
     }
     setErrorMsg(null);
-  }, [milestoneToEdit, isOpen, milestones.length]);
+  }, [milestoneToEdit?.id, isOpen, milestones.length]);
 
   if (!isOpen) return null;
 

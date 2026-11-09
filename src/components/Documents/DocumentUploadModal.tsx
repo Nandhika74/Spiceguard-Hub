@@ -54,6 +54,7 @@ export const DocumentUploadModal: React.FC<DocumentUploadModalProps> = ({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isOpen) return;
     if (docToEdit) {
       setTitle(docToEdit.title);
       setDescription(docToEdit.description || '');
@@ -78,7 +79,7 @@ export const DocumentUploadModal: React.FC<DocumentUploadModalProps> = ({
     setErrorMsg(null);
     setSuccessMsg(null);
     setIsUploading(false);
-  }, [docToEdit, isOpen]);
+  }, [docToEdit?.id, isOpen]);
 
   if (!isOpen) return null;
 

@@ -9,6 +9,7 @@ import { TaskFormModal } from './TaskFormModal';
 import { MilestoneDateHistoryModal } from './MilestoneDateHistoryModal';
 import { TaskCommentsModal } from './TaskCommentsModal';
 import { TaskCompletionModal } from './TaskCompletionModal';
+import { ConfirmDeleteModal } from '../ui/ConfirmDeleteModal';
 import { StatCard } from '../ui/StatCard';
 import { ChartCard } from '../ui/ChartCard';
 import { DonutChart } from '../ui/DonutChart';
@@ -16,6 +17,7 @@ import { HorizontalBarChart } from '../ui/HorizontalBarChart';
 import { BurndownChart } from '../ui/BurndownChart';
 import {
   Plus,
+  X,
   GripVertical,
   MoreHorizontal,
   Calendar,
@@ -73,6 +75,9 @@ export const MilestonesView: React.FC = () => {
   const [commentsModalTask, setCommentsModalTask] = useState<Task | null>(null);
 
   const [activeMenuMilestoneId, setActiveMenuMilestoneId] = useState<string | null>(null);
+  const [activeMenuTaskId, setActiveMenuTaskId] = useState<string | null>(null);
+  const [taskToDelete, setTaskToDelete] = useState<Task | null>(null);
+  const [milestoneToDelete, setMilestoneToDelete] = useState<Milestone | null>(null);
 
   const activeMilestones = milestones.filter((m) => (showArchived ? m.archived : !m.archived));
 
@@ -82,16 +87,19 @@ export const MilestonesView: React.FC = () => {
     if (!showArchived && parentMilestone?.archived) return false;
 
     if (assigneeFilter !== 'all') {
-      const matchEmail = task.assignee_id?.toLowerCase() === assigneeFilter.toLowerCase();
-      const matchName = task.assignee_name?.toLowerCase().includes(assigneeFilter.toLowerCase());
+      const needle = assigneeFilter.toLowerCase();
+      const matchEmail = (task.assignee_id || '').toLowerCase().includes(needle);
+      const matchName = (task.assignee_name || '').toLowerCase().includes(needle);
       if (!matchEmail && !matchName) return false;
     }
 
     if (statusFilter !== 'all' && task.status !== statusFilter) return false;
 
     if (monthFilter !== 'all') {
-      const phase = parentMilestone?.phase_label || '';
-      if (!phase.toLowerCase().includes(monthFilter.toLowerCase())) return false;
+      const phase = (parentMilestone?.phase_label || '').toLowerCase();
+      const title = (parentMilestone?.title || '').toLowerCase();
+      const mFilter = monthFilter.toLowerCase();
+      if (!phase.includes(mFilter) && !title.includes(mFilter)) return false;
     }
 
     if (onlyOverdue) {
@@ -112,11 +120,44 @@ export const MilestonesView: React.FC = () => {
     return true;
   });
 
+  const isFiltering =
+    assigneeFilter !== 'all' ||
+    statusFilter !== 'all' ||
+    monthFilter !== 'all' ||
+    onlyOverdue ||
+    searchQuery.trim().length > 0;
+
+  // Filter milestones based on month filter and matching tasks
+  const filteredMilestones = activeMilestones.filter((milestone) => {
+    if (monthFilter !== 'all') {
+      const phase = (milestone.phase_label || '').toLowerCase();
+      const title = (milestone.title || '').toLowerCase();
+      const mFilter = monthFilter.toLowerCase();
+      if (!phase.includes(mFilter) && !title.includes(mFilter)) return false;
+    }
+
+    if (assigneeFilter !== 'all' || statusFilter !== 'all' || onlyOverdue || searchQuery.trim()) {
+      const hasMatchingTasks = filteredTasks.some((t) => t.milestone_id === milestone.id);
+      if (!hasMatchingTasks) {
+        if (searchQuery.trim()) {
+          const q = searchQuery.toLowerCase();
+          const matchTitle = milestone.title.toLowerCase().includes(q);
+          const matchDesc = (milestone.description || '').toLowerCase().includes(q);
+          if (!matchTitle && !matchDesc) return false;
+        } else {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  });
+
   const openTasksCount = filteredTasks.filter((t) => t.status !== 'Done').length;
 
   const handleToggleTaskStatus = (task: Task) => {
     if (task.status === 'Done') {
-      toggleTaskStatus(task.id);
+      toggleTaskStatus(task.id, task.status);
     } else {
       setTaskForCompletionModal(task);
     }
@@ -266,6 +307,24 @@ export const MilestonesView: React.FC = () => {
           <AlertCircle className="w-3.5 h-3.5 text-rose-500" />
           <span>Overdue</span>
         </button>
+
+        {isFiltering && (
+          <button
+            type="button"
+            onClick={() => {
+              setSearchQuery('');
+              setAssigneeFilter('all');
+              setStatusFilter('all');
+              setMonthFilter('all');
+              setOnlyOverdue(false);
+            }}
+            className="px-3 py-2 text-xs rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
+            title="Clear all active filters"
+          >
+            <X className="w-3.5 h-3.5 text-emerald-700" />
+            <span>Reset filters ({filteredTasks.length} matching)</span>
+          </button>
+        )}
       </div>
 
       {/* VIEW 1: KANBAN BOARD matching image_9221fae2.png */}
@@ -382,13 +441,42 @@ export const MilestonesView: React.FC = () => {
       {/* VIEW 3: LIST VIEW (Milestone Cards with Tasks) */}
       {currentView === 'list' && (
         <div className="space-y-5">
-          {activeMilestones.map((milestone, idx) => {
-            const milestoneTasks = tasks.filter((t) => t.milestone_id === milestone.id);
-            const completedCount = milestoneTasks.filter((t) => t.status === 'Done').length;
-            const isAllDone = milestoneTasks.length > 0 && completedCount === milestoneTasks.length;
-            const pct = milestoneTasks.length === 0 ? 0 : Math.round((completedCount / milestoneTasks.length) * 100);
+          {filteredMilestones.length === 0 ? (
+            <div className="rounded-3xl bg-white border border-[#E2E8E0] p-10 text-center shadow-xs space-y-3">
+              <div className="w-12 h-12 rounded-full bg-emerald-50 text-emerald-800 mx-auto flex items-center justify-center">
+                <Search className="w-6 h-6" />
+              </div>
+              <h3 className="text-base font-bold text-stone-800">No matching milestones or tasks found</h3>
+              <p className="text-xs text-stone-500 max-w-sm mx-auto">
+                No items match your active filters. Try adjusting your search query, status, assignee, or month filter.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setAssigneeFilter('all');
+                  setStatusFilter('all');
+                  setMonthFilter('all');
+                  setOnlyOverdue(false);
+                }}
+                className="px-4 py-2 rounded-xl bg-emerald-900 hover:bg-emerald-800 text-white font-semibold text-xs shadow-xs transition cursor-pointer"
+              >
+                Clear all filters
+              </button>
+            </div>
+          ) : (
+            filteredMilestones.map((milestone, idx) => {
+              const allMilestoneTasks = tasks.filter((t) => t.milestone_id === milestone.id);
+              const completedCount = allMilestoneTasks.filter((t) => t.status === 'Done').length;
+              const isAllDone = allMilestoneTasks.length > 0 && completedCount === allMilestoneTasks.length;
+              const pct = allMilestoneTasks.length === 0 ? 0 : Math.round((completedCount / allMilestoneTasks.length) * 100);
 
-            return (
+              // Tasks to display: filtered when filters are active, or all tasks when viewing unfiltered
+              const displayedTasks = isFiltering
+                ? filteredTasks.filter((t) => t.milestone_id === milestone.id)
+                : allMilestoneTasks;
+
+              return (
               <div
                 key={milestone.id}
                 className="rounded-3xl bg-white border border-[#E2E8E0] shadow-xs overflow-hidden"
@@ -427,64 +515,81 @@ export const MilestonesView: React.FC = () => {
                       <span className="text-sm font-extrabold text-[#14281E]">{pct}%</span>
                       <div className="relative">
                         <button
-                          onClick={() =>
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveMenuTaskId(null);
                             setActiveMenuMilestoneId(
                               activeMenuMilestoneId === milestone.id ? null : milestone.id
-                            )
-                          }
-                          className="p-1 rounded-lg text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition"
+                            );
+                          }}
+                          className="p-1 rounded-lg text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition active:scale-95"
+                          title="Milestone options"
+                          aria-label="Milestone options"
                         >
                           <MoreHorizontal className="w-4 h-4" />
                         </button>
 
                         {activeMenuMilestoneId === milestone.id && (
-                          <div className="absolute right-0 top-7 w-44 rounded-2xl bg-white shadow-xl border border-stone-200 py-1.5 z-20 text-xs">
-                            <button
-                              onClick={() => {
+                          <>
+                            {/* Full-screen backdrop to dismiss on click/touch outside */}
+                            <div
+                              className="fixed inset-0 z-30 bg-transparent cursor-default select-none"
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 setActiveMenuMilestoneId(null);
-                                setMilestoneToEdit(milestone);
-                                setMilestoneModalOpen(true);
                               }}
-                              className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2"
-                            >
-                              <Edit2 className="w-3.5 h-3.5 text-stone-400" />
-                              Edit Milestone
-                            </button>
-                            <button
-                              onClick={() => {
+                              onTouchStart={(e) => {
+                                e.stopPropagation();
                                 setActiveMenuMilestoneId(null);
-                                duplicateMilestone(milestone.id);
                               }}
-                              className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2"
-                            >
-                              <Copy className="w-3.5 h-3.5 text-stone-400" />
-                              Duplicate
-                            </button>
-                            <button
-                              onClick={() => {
-                                setActiveMenuMilestoneId(null);
-                                archiveMilestone(milestone.id, !milestone.archived);
-                              }}
-                              className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2"
-                            >
-                              <Archive className="w-3.5 h-3.5 text-stone-400" />
-                              {milestone.archived ? 'Restore' : 'Archive'}
-                            </button>
-                            {isTeamLead && (
+                              aria-hidden="true"
+                            />
+                            <div className="absolute right-0 top-7 w-44 rounded-2xl bg-white shadow-xl border border-stone-200 py-1.5 z-40 text-xs animate-scaleIn">
                               <button
                                 onClick={() => {
                                   setActiveMenuMilestoneId(null);
-                                  if (confirm(`Delete milestone "${milestone.title}"?`)) {
-                                    deleteMilestone(milestone.id);
-                                  }
+                                  setMilestoneToEdit(milestone);
+                                  setMilestoneModalOpen(true);
                                 }}
-                                className="w-full px-3 py-1.5 text-left text-red-600 hover:bg-red-50 flex items-center gap-2 border-t border-stone-100"
+                                className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2 cursor-pointer"
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                Delete
+                                <Edit2 className="w-3.5 h-3.5 text-stone-400" />
+                                Edit Milestone
                               </button>
-                            )}
-                          </div>
+                              <button
+                                onClick={() => {
+                                  setActiveMenuMilestoneId(null);
+                                  duplicateMilestone(milestone.id);
+                                }}
+                                className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2 cursor-pointer"
+                              >
+                                <Copy className="w-3.5 h-3.5 text-stone-400" />
+                                Duplicate
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setActiveMenuMilestoneId(null);
+                                  archiveMilestone(milestone.id, !milestone.archived);
+                                }}
+                                className="w-full px-3 py-1.5 text-left text-stone-700 hover:bg-stone-50 flex items-center gap-2 cursor-pointer"
+                              >
+                                <Archive className="w-3.5 h-3.5 text-stone-400" />
+                                {milestone.archived ? 'Restore' : 'Archive'}
+                              </button>
+                              {isTeamLead && (
+                                <button
+                                  onClick={() => {
+                                    setActiveMenuMilestoneId(null);
+                                    setMilestoneToDelete(milestone);
+                                  }}
+                                  className="w-full px-3 py-1.5 text-left text-red-600 hover:bg-red-50 flex items-center gap-2 border-t border-stone-100 cursor-pointer font-medium"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  Delete
+                                </button>
+                              )}
+                            </div>
+                          </>
                         )}
                       </div>
                     </div>
@@ -508,18 +613,33 @@ export const MilestonesView: React.FC = () => {
 
                 {/* Tasks List */}
                 <div className="px-3 sm:px-5 pb-4 space-y-0.5 divide-y divide-stone-100">
-                  {milestoneTasks.map((task) => (
-                    <TaskItem
-                      key={task.id}
-                      task={task}
-                      milestones={milestones}
-                      onOpenComments={(t) => setCommentsModalTask(t)}
-                      onEditTask={(t) => {
-                        setTaskToEdit(t);
-                        setTaskModalOpen(true);
-                      }}
-                    />
-                  ))}
+                  {displayedTasks.length === 0 ? (
+                    <div className="py-4 text-center text-xs text-stone-400 font-medium">
+                      {isFiltering
+                        ? 'No tasks in this milestone match the active filters.'
+                        : 'No tasks added yet. Click "+ Add task" below.'}
+                    </div>
+                  ) : (
+                    displayedTasks.map((task) => (
+                      <TaskItem
+                        key={task.id}
+                        task={task}
+                        milestones={milestones}
+                        isMenuOpen={activeMenuTaskId === task.id}
+                        onToggleMenu={() => {
+                          setActiveMenuMilestoneId(null);
+                          setActiveMenuTaskId(activeMenuTaskId === task.id ? null : task.id);
+                        }}
+                        onCloseMenu={() => setActiveMenuTaskId(null)}
+                        onRequestDelete={(t) => setTaskToDelete(t)}
+                        onOpenComments={(t) => setCommentsModalTask(t)}
+                        onEditTask={(t) => {
+                          setTaskToEdit(t);
+                          setTaskModalOpen(true);
+                        }}
+                      />
+                    ))
+                  )}
 
                   <div className="pt-2">
                     <button
@@ -537,7 +657,7 @@ export const MilestonesView: React.FC = () => {
                 </div>
               </div>
             );
-          })}
+          }))}
         </div>
       )}
 
@@ -569,6 +689,36 @@ export const MilestonesView: React.FC = () => {
         task={taskForCompletionModal}
         isOpen={Boolean(taskForCompletionModal)}
         onClose={() => setTaskForCompletionModal(null)}
+      />
+
+      {/* Confirmation Dialog for Task Deletion */}
+      <ConfirmDeleteModal
+        isOpen={Boolean(taskToDelete)}
+        title="Delete Task"
+        message={`Are you sure you want to delete "${taskToDelete?.title}"? (You will have 10 seconds to undo this deletion).`}
+        confirmLabel="Delete Task"
+        onConfirm={() => {
+          if (taskToDelete) {
+            deleteTask(taskToDelete.id);
+            setTaskToDelete(null);
+          }
+        }}
+        onCancel={() => setTaskToDelete(null)}
+      />
+
+      {/* Confirmation Dialog for Milestone Deletion */}
+      <ConfirmDeleteModal
+        isOpen={Boolean(milestoneToDelete)}
+        title="Delete Milestone"
+        message={`Are you sure you want to delete milestone "${milestoneToDelete?.title}" and all its tasks? This action cannot be undone.`}
+        confirmLabel="Delete Milestone"
+        onConfirm={() => {
+          if (milestoneToDelete) {
+            deleteMilestone(milestoneToDelete.id);
+            setMilestoneToDelete(null);
+          }
+        }}
+        onCancel={() => setMilestoneToDelete(null)}
       />
     </div>
   );
@@ -719,11 +869,7 @@ export const MilestonesView: React.FC = () => {
                     </button>
 
                     <button
-                      onClick={() => {
-                        if (confirm(`Delete task "${task.title}"?`)) {
-                          deleteTask(task.id);
-                        }
-                      }}
+                      onClick={() => setTaskToDelete(task)}
                       className="opacity-0 group-hover:opacity-100 p-1 text-stone-300 hover:text-red-500 rounded transition"
                       title="Delete task"
                     >

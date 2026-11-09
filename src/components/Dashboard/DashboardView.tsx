@@ -38,7 +38,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateTab }) =
     const task = tasks.find((t) => t.id === taskId);
     if (!task) return;
     if (task.status === 'Done') {
-      toggleTaskStatus(taskId);
+      toggleTaskStatus(taskId, task.status);
     } else {
       setTaskForCompletionModal(task);
     }
@@ -609,7 +609,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateTab }) =
               Recent Team Activity
             </h3>
           </div>
-          <span className="text-xs text-stone-400">Live feed</span>
+          <span className="inline-flex items-center gap-1.5 text-xs text-emerald-800 font-semibold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span>Live sync</span>
+          </span>
         </div>
 
         <div className="divide-y divide-stone-100">
