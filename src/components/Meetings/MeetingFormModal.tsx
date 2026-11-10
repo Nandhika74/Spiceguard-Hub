@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Meeting, MeetingType, MeetingActionItem } from '../../types';
 import { useRealtimeStore } from '../../hooks/useRealtimeStore';
-import { Plus, Trash2, X, AlertCircle, Paperclip, Calendar, Check } from 'lucide-react';
+import { Plus, Trash2, X, AlertCircle, Paperclip, Calendar, Check, FileText, Upload } from 'lucide-react';
+import { SEED_MEMBERS } from '../../lib/constants';
+import { readFileAsDataUrl } from '../../lib/storage';
 
 interface MeetingFormModalProps {
   isOpen: boolean;
@@ -9,25 +11,43 @@ interface MeetingFormModalProps {
   meetingToEdit?: Meeting | null;
 }
 
+const getInitialDateTimeLocal = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+};
+
 export const MeetingFormModal: React.FC<MeetingFormModalProps> = ({
   isOpen,
   onClose,
   meetingToEdit,
 }) => {
-  const { addMeeting, updateMeeting, currentUser } = useRealtimeStore();
+  const { addMeeting, updateMeeting, currentUser, teamMembers, documents } = useRealtimeStore();
 
   const isEditing = Boolean(meetingToEdit);
 
+  const availableMembers = teamMembers.length > 0 ? teamMembers : SEED_MEMBERS;
+  const teamShortNames = availableMembers.map((m) => m.full_name.split(' ')[0]);
+
   const [title, setTitle] = useState('');
-  const [meetingDate, setMeetingDate] = useState('2026-11-04T20:09');
+  const [meetingDate, setMeetingDate] = useState(getInitialDateTimeLocal());
   const [type, setType] = useState<MeetingType>('Internal review');
-  const [selectedAttendees, setSelectedAttendees] = useState<string[]>(['Abhijith', 'Sivakumaran', 'Nandhika', 'Nithyasree']);
+  const [selectedAttendees, setSelectedAttendees] = useState<string[]>([currentUser.full_name.split(' ')[0]]);
   const [guestAttendees, setGuestAttendees] = useState('');
   const [agenda, setAgenda] = useState('');
   const [notes, setNotes] = useState('');
   const [keyDecisions, setKeyDecisions] = useState('');
   const [inferencesLearnings, setInferencesLearnings] = useState('');
-  const [attachments, setAttachments] = useState<Array<{ name: string; url: string; size?: number }>>([]);
+  const [attachments, setAttachments] = useState<
+    Array<{ name: string; url: string; size?: number; document_id?: string }>
+  >([]);
+  const [attachTab, setAttachTab] = useState<'upload' | 'pick'>('upload');
+  const [selectedDocId, setSelectedDocId] = useState('');
+  const [isReadingFile, setIsReadingFile] = useState(false);
 
   // Action Items
   const [actionItems, setActionItems] = useState<
@@ -40,15 +60,13 @@ export const MeetingFormModal: React.FC<MeetingFormModalProps> = ({
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const teamShortNames = ['Abhijith', 'Sivakumaran', 'Nandhika', 'Nithyasree'];
-
   useEffect(() => {
     if (meetingToEdit) {
       setTitle(meetingToEdit.title);
-      setMeetingDate(meetingToEdit.meeting_date.substring(0, 16));
+      setMeetingDate(meetingToEdit.meeting_date ? meetingToEdit.meeting_date.substring(0, 16) : getInitialDateTimeLocal());
       setType(meetingToEdit.type);
       setSelectedAttendees(
-        meetingToEdit.attendees.map((a) => a.split(' ')[0])
+        (meetingToEdit.attendees || []).map((a) => a.split(' ')[0])
       );
       setGuestAttendees(meetingToEdit.guest_attendees || '');
       setAgenda(meetingToEdit.agenda || '');
@@ -66,9 +84,9 @@ export const MeetingFormModal: React.FC<MeetingFormModalProps> = ({
       );
     } else {
       setTitle('');
-      setMeetingDate('2026-11-04T20:09');
+      setMeetingDate(getInitialDateTimeLocal());
       setType('Internal review');
-      setSelectedAttendees(['Abhijith', 'Sivakumaran', 'Nandhika', 'Nithyasree']);
+      setSelectedAttendees([currentUser.full_name.split(' ')[0]]);
       setGuestAttendees('');
       setAgenda('');
       setNotes('');
@@ -77,6 +95,7 @@ export const MeetingFormModal: React.FC<MeetingFormModalProps> = ({
       setAttachments([]);
       setActionItems([]);
       setShowAddActionForm(false);
+      setSelectedDocId('');
     }
     setErrorMsg(null);
   }, [meetingToEdit, isOpen, currentUser.full_name]);
@@ -108,14 +127,50 @@ export const MeetingFormModal: React.FC<MeetingFormModalProps> = ({
     setActionItems((prev) => prev.filter((a) => a.id !== id));
   };
 
-  const handleFileAttach = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileAttach = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
 
-    for (const f of files) {
-      const url = URL.createObjectURL(f);
-      setAttachments((prev) => [...prev, { name: f.name, url, size: f.size }]);
+    setIsReadingFile(true);
+    try {
+      for (const f of files) {
+        let permanentUrl: string;
+        try {
+          permanentUrl = await readFileAsDataUrl(f);
+        } catch {
+          permanentUrl = URL.createObjectURL(f);
+        }
+        setAttachments((prev) => [
+          ...prev,
+          { name: f.name, url: permanentUrl, size: f.size },
+        ]);
+      }
+    } finally {
+      setIsReadingFile(false);
+      e.target.value = '';
     }
+  };
+
+  const handleLinkExistingDoc = (docId: string) => {
+    if (!docId) return;
+    const doc = documents.find((d) => d.id === docId);
+    if (!doc) return;
+
+    // Check if already attached
+    if (attachments.some((a) => a.document_id === doc.id || a.url === doc.file_url)) {
+      return;
+    }
+
+    setAttachments((prev) => [
+      ...prev,
+      {
+        name: doc.title,
+        url: doc.file_url,
+        size: doc.file_size,
+        document_id: doc.id,
+      },
+    ]);
+    setSelectedDocId('');
   };
 
   const handleRemoveAttachment = (idx: number) => {
@@ -414,37 +469,95 @@ export const MeetingFormModal: React.FC<MeetingFormModalProps> = ({
             )}
           </div>
 
-          {/* Attach file button matching image_9e8e7919.png */}
-          <div>
-            <div className="relative inline-block">
-              <input
-                type="file"
-                multiple
-                onChange={handleFileAttach}
-                className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
-              />
+          {/* Attach / Link Documents */}
+          <div className="pt-1">
+            <label className="block text-xs font-semibold text-stone-800 mb-1.5">
+              Attach files & link documents
+            </label>
+
+            <div className="flex items-center gap-2 mb-2">
               <button
                 type="button"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-stone-200 hover:bg-stone-50 text-xs font-semibold text-stone-700 transition"
+                onClick={() => setAttachTab('upload')}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition ${
+                  attachTab === 'upload'
+                    ? 'bg-[#164E33] text-white shadow-xs'
+                    : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
+                }`}
               >
-                <Paperclip className="w-3.5 h-3.5 text-stone-400" />
-                <span>Attach file</span>
+                Upload file
+              </button>
+              <button
+                type="button"
+                onClick={() => setAttachTab('pick')}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition ${
+                  attachTab === 'pick'
+                    ? 'bg-[#164E33] text-white shadow-xs'
+                    : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
+                }`}
+              >
+                Pick from Docs ({documents.length})
               </button>
             </div>
 
+            {attachTab === 'upload' ? (
+              <div className="relative inline-block">
+                <input
+                  type="file"
+                  multiple
+                  onChange={handleFileAttach}
+                  disabled={isReadingFile}
+                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full disabled:cursor-not-allowed"
+                />
+                <button
+                  type="button"
+                  disabled={isReadingFile}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-stone-200 hover:bg-stone-50 text-xs font-semibold text-stone-700 transition"
+                >
+                  <Paperclip className="w-3.5 h-3.5 text-stone-400" />
+                  <span>{isReadingFile ? 'Processing file...' : 'Choose files from device'}</span>
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <select
+                  value={selectedDocId}
+                  onChange={(e) => handleLinkExistingDoc(e.target.value)}
+                  className="w-full max-w-md px-3 py-1.5 text-xs rounded-xl border border-stone-200 bg-white font-medium text-stone-700 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#164E33]"
+                >
+                  <option value="">-- Choose document from Docs section --</option>
+                  {documents.map((doc) => (
+                    <option key={doc.id} value={doc.id}>
+                      {doc.title} ({doc.category})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             {attachments.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-2">
+              <div className="mt-2.5 flex flex-wrap gap-2">
                 {attachments.map((att, i) => (
                   <div
                     key={i}
                     className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-100 text-xs text-stone-700 border border-stone-200"
                   >
-                    <Paperclip className="w-3 h-3 text-stone-400" />
-                    <span className="truncate max-w-[150px]">{att.name}</span>
+                    {att.document_id ? (
+                      <FileText className="w-3 h-3 text-emerald-800" />
+                    ) : (
+                      <Paperclip className="w-3 h-3 text-stone-400" />
+                    )}
+                    <span className="truncate max-w-[180px]" title={att.name}>{att.name}</span>
+                    {att.document_id && (
+                      <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1 py-0.2 rounded font-medium">
+                        Docs
+                      </span>
+                    )}
                     <button
                       type="button"
                       onClick={() => handleRemoveAttachment(i)}
-                      className="text-stone-400 hover:text-red-500"
+                      className="text-stone-400 hover:text-red-500 ml-0.5 cursor-pointer"
+                      title="Remove attachment"
                     >
                       <X className="w-3 h-3" />
                     </button>
@@ -467,7 +580,7 @@ export const MeetingFormModal: React.FC<MeetingFormModalProps> = ({
               type="submit"
               className="px-5 py-2.5 rounded-xl bg-[#164E33] hover:bg-[#123F29] text-white text-xs font-bold shadow-xs transition active:scale-95"
             >
-              Log meeting
+              {isEditing ? 'Save changes' : 'Log meeting'}
             </button>
           </div>
         </form>

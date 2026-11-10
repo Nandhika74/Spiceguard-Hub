@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Milestone, Task, TaskStatus } from '../../types';
 import { useRealtimeStore } from '../../hooks/useRealtimeStore';
 import { formatDate, getDeadlineStatus } from '../../lib/dateUtils';
@@ -78,6 +78,29 @@ export const MilestonesView: React.FC = () => {
   const [activeMenuTaskId, setActiveMenuTaskId] = useState<string | null>(null);
   const [taskToDelete, setTaskToDelete] = useState<Task | null>(null);
   const [milestoneToDelete, setMilestoneToDelete] = useState<Milestone | null>(null);
+
+  // Auto-dismiss 3-dots menus when touching or clicking anywhere else on screen (critical for mobile UI)
+  useEffect(() => {
+    if (!activeMenuMilestoneId && !activeMenuTaskId) return;
+    const handleOutsideInteraction = () => {
+      setActiveMenuMilestoneId(null);
+      setActiveMenuTaskId(null);
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setActiveMenuMilestoneId(null);
+        setActiveMenuTaskId(null);
+      }
+    };
+    window.addEventListener('click', handleOutsideInteraction);
+    window.addEventListener('touchstart', handleOutsideInteraction);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('click', handleOutsideInteraction);
+      window.removeEventListener('touchstart', handleOutsideInteraction);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [activeMenuMilestoneId, activeMenuTaskId]);
 
   const activeMilestones = milestones.filter((m) => (showArchived ? m.archived : !m.archived));
 

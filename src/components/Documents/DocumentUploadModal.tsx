@@ -4,6 +4,7 @@ import { useRealtimeStore } from '../../hooks/useRealtimeStore';
 import { isSupabaseConfigured } from '../../lib/supabase';
 import {
   uploadDocumentFile,
+  readFileAsDataUrl,
   isBlobUrl,
   getSignedDocumentUrl,
   deleteDocumentFile,
@@ -239,7 +240,7 @@ export const DocumentUploadModal: React.FC<DocumentUploadModalProps> = ({
             }
             fileUrl = uploadRes.path;
           } else {
-            fileUrl = URL.createObjectURL(item.file);
+            fileUrl = await readFileAsDataUrl(item.file);
           }
 
           const docTitle =

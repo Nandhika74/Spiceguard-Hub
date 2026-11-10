@@ -370,7 +370,10 @@ export const DocumentsView: React.FC = () => {
       <DocumentPreviewModal
         document={previewDoc}
         onClose={() => setPreviewDoc(null)}
-        onDelete={(doc) => setDocToDelete(doc)}
+        onDelete={(doc) => {
+          setPreviewDoc(null);
+          setDocToDelete(doc);
+        }}
       />
 
       {/* Delete Confirmation Modal */}

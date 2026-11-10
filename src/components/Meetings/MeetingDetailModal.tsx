@@ -1,9 +1,76 @@
 import React, { useState } from 'react';
 import { Meeting } from '../../types';
 import { useRealtimeStore } from '../../hooks/useRealtimeStore';
-import { Calendar, Trash2, Edit2, X, Plus, Check } from 'lucide-react';
+import { Calendar, Trash2, Edit2, X, Plus, Check, Paperclip, FileText, ExternalLink } from 'lucide-react';
 import { ConfirmDeleteModal } from '../ui/ConfirmDeleteModal';
+import { DocumentPreviewModal } from '../Documents/DocumentPreviewModal';
 import { generateUuid } from '../../lib/realtimeStore';
+import { SEED_MEMBERS } from '../../lib/constants';
+
+const getMemberDetails = (nameOrEmail: string, teamMembers: any[]) => {
+  const q = nameOrEmail.toLowerCase().trim();
+  const found =
+    teamMembers.find(
+      (m) =>
+        m.email.toLowerCase() === q ||
+        m.full_name.toLowerCase() === q ||
+        m.full_name.toLowerCase().includes(q) ||
+        q.includes(m.full_name.toLowerCase().split(' ')[0])
+    ) ||
+    SEED_MEMBERS.find(
+      (m) =>
+        m.email.toLowerCase() === q ||
+        m.full_name.toLowerCase() === q ||
+        m.full_name.toLowerCase().includes(q) ||
+        q.includes(m.full_name.toLowerCase().split(' ')[0])
+    );
+
+  if (found) {
+    const parts = found.full_name.split(' ');
+    const initials =
+      parts.length > 1
+        ? `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase()
+        : parts[0].substring(0, 2).toUpperCase();
+    return {
+      name: found.full_name,
+      shortName: parts[0],
+      initials,
+      color: found.avatar_color || '#164E33',
+    };
+  }
+
+  const clean = nameOrEmail.trim();
+  const initials = clean.length >= 2 ? clean.substring(0, 2).toUpperCase() : clean.toUpperCase();
+  return {
+    name: clean,
+    shortName: clean,
+    initials,
+    color: '#4B5563',
+  };
+};
+
+const formatMeetingDateDisplay = (dateString?: string | null) => {
+  if (!dateString) return 'Not set';
+  try {
+    const d = new Date(dateString);
+    if (isNaN(d.getTime())) return dateString;
+    const day = d.getDate();
+    const month = d.toLocaleDateString('en-US', { month: 'short' });
+    const year = d.getFullYear();
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    return `${day} ${month} ${year} · ${hours}:${minutes}`;
+  } catch {
+    return dateString;
+  }
+};
+
+const formatFileSize = (bytes?: number | null) => {
+  if (!bytes) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
 
 interface MeetingDetailModalProps {
   meeting: Meeting | null;
@@ -18,12 +85,13 @@ export const MeetingDetailModal: React.FC<MeetingDetailModalProps> = ({
   onClose,
   onEdit,
 }) => {
-  const { deleteMeeting, convertActionItemToTask, updateMeeting, milestones } = useRealtimeStore();
+  const { deleteMeeting, convertActionItemToTask, updateMeeting, milestones, teamMembers, documents } = useRealtimeStore();
 
   const [newActionText, setNewActionText] = useState('');
   const [newActionOwner, setNewActionOwner] = useState('Nandhika S');
   const [newActionDate, setNewActionDate] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [previewDoc, setPreviewDoc] = useState<any | null>(null);
 
   if (!isOpen || !meeting) return null;
 
@@ -74,23 +142,37 @@ export const MeetingDetailModal: React.FC<MeetingDetailModalProps> = ({
               </span>
               <span className="text-xs text-stone-500 flex items-center gap-1">
                 <Calendar className="w-3.5 h-3.5 text-stone-400" />
-                <span>4 Nov 2026 · 02:00</span>
+                <span>{formatMeetingDateDisplay(meeting.meeting_date)}</span>
               </span>
               <span className="text-xs text-stone-400">
-                · logged by {meeting.created_by_name || 'Nandhika S'}
+                · logged by {meeting.created_by_name || meeting.created_by || 'Team member'}
               </span>
             </div>
 
             {/* Attendees pills row */}
             <div className="flex flex-wrap gap-1.5 mt-3">
-              {meeting.attendees.map((att, i) => (
-                <span
-                  key={i}
-                  className="px-2.5 py-1 rounded-lg bg-stone-100 text-stone-700 text-xs font-medium"
-                >
-                  {att}
+              {(meeting.attendees || []).map((att, i) => {
+                const details = getMemberDetails(att, teamMembers);
+                return (
+                  <span
+                    key={i}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-100 text-stone-700 text-xs font-medium"
+                  >
+                    <span
+                      className="w-4 h-4 rounded-full text-white text-[8px] font-bold flex items-center justify-center"
+                      style={{ backgroundColor: details.color }}
+                    >
+                      {details.initials}
+                    </span>
+                    <span>{details.name}</span>
+                  </span>
+                );
+              })}
+              {meeting.guest_attendees && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-50 text-amber-800 border border-amber-200/60 text-xs font-medium">
+                  <span>Guests: {meeting.guest_attendees}</span>
                 </span>
-              ))}
+              )}
             </div>
           </div>
 
@@ -104,13 +186,29 @@ export const MeetingDetailModal: React.FC<MeetingDetailModalProps> = ({
 
         {/* Scrollable Body */}
         <div className="p-6 sm:p-7 overflow-y-auto space-y-5 flex-1 text-xs">
+          {/* INFERENCES & LEARNINGS */}
+          {meeting.inferences_learnings && (
+            <div>
+              <h4 className="font-bold text-stone-400 uppercase tracking-widest text-[10px] mb-1.5">
+                INFERENCES & LEARNINGS
+              </h4>
+              <div className="text-[#1E5638] leading-relaxed whitespace-pre-line bg-[#EAF3EB] p-3 rounded-xl border border-[#D5E8D8] font-medium">
+                {meeting.inferences_learnings}
+              </div>
+            </div>
+          )}
+
           {/* AGENDA */}
           <div>
             <h4 className="font-bold text-stone-400 uppercase tracking-widest text-[10px] mb-1.5">
               AGENDA
             </h4>
             <div className="text-stone-700 leading-relaxed whitespace-pre-line bg-stone-50/70 p-3 rounded-xl border border-stone-100">
-              {meeting.agenda || 'Meet start at 2.00\norganized-roopa mam\nattendees-abhijith,siva,nithya,nandhika\nupdates on work'}
+              {meeting.agenda ? (
+                meeting.agenda
+              ) : (
+                <span className="text-stone-400 italic">No agenda specified for this meeting.</span>
+              )}
             </div>
           </div>
 
@@ -120,7 +218,11 @@ export const MeetingDetailModal: React.FC<MeetingDetailModalProps> = ({
               NOTES
             </h4>
             <div className="text-stone-700 leading-relaxed whitespace-pre-line bg-stone-50/70 p-3 rounded-xl border border-stone-100">
-              {meeting.notes || 'Disccused about the updates\nData Availability at PlantLipids\nTravel to PlantLipids\nShe shared about our Mentor(Arjun)\nAlso stated to finalize the budget'}
+              {meeting.notes ? (
+                meeting.notes
+              ) : (
+                <span className="text-stone-400 italic">No meeting notes recorded.</span>
+              )}
             </div>
           </div>
 
@@ -130,9 +232,79 @@ export const MeetingDetailModal: React.FC<MeetingDetailModalProps> = ({
               KEY DECISIONS
             </h4>
             <div className="text-stone-700 leading-relaxed whitespace-pre-line bg-stone-50/70 p-3 rounded-xl border border-stone-100">
-              {meeting.key_decisions || 'Data requirement rough sketch\nTotal Budget Rough Sketch'}
+              {meeting.key_decisions ? (
+                meeting.key_decisions
+              ) : (
+                <span className="text-stone-400 italic">No key decisions recorded.</span>
+              )}
             </div>
           </div>
+
+          {/* ATTACHED FILES & LINKED DOCUMENTS */}
+          {meeting.attachment_urls && meeting.attachment_urls.length > 0 && (
+            <div className="pt-1">
+              <h4 className="font-bold text-stone-400 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1.5">
+                <Paperclip className="w-3.5 h-3.5 text-stone-400" />
+                <span>ATTACHED FILES & LINKED DOCS ({meeting.attachment_urls.length})</span>
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {meeting.attachment_urls.map((att, i) => {
+                  const handleOpenAttachment = () => {
+                    const matchingDoc = documents.find(
+                      (d) =>
+                        d.id === (att as any).document_id ||
+                        d.title.toLowerCase() === att.name.toLowerCase() ||
+                        d.file_url === att.url
+                    );
+                    if (matchingDoc) {
+                      setPreviewDoc(matchingDoc);
+                    } else {
+                      setPreviewDoc({
+                        id: (att as any).document_id || `att-${meeting.id}-${i}`,
+                        title: att.name,
+                        file_name: att.name,
+                        file_url: att.url,
+                        file_size: att.size,
+                        category: 'Plant Lipids data',
+                        tags: ['Meeting Attachment'],
+                        is_external_link: false,
+                        uploaded_by: meeting.created_by,
+                        uploaded_by_name: meeting.created_by_name || 'Team member',
+                        created_at: meeting.created_at,
+                        updated_at: meeting.updated_at,
+                      });
+                    }
+                  };
+
+                  return (
+                    <div
+                      key={i}
+                      className="flex items-center justify-between p-2.5 rounded-xl bg-stone-50 border border-stone-200 hover:border-emerald-600 transition group"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <FileText className="w-4 h-4 text-emerald-800 shrink-0" />
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-stone-800 truncate max-w-[190px]" title={att.name}>
+                            {att.name}
+                          </p>
+                          {att.size ? (
+                            <p className="text-[10px] text-stone-400">{formatFileSize(att.size)}</p>
+                          ) : null}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleOpenAttachment}
+                        className="px-2.5 py-1 text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition shrink-0 cursor-pointer"
+                      >
+                        Preview
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* ACTION ITEMS */}
           <div className="pt-2">
@@ -258,6 +430,11 @@ export const MeetingDetailModal: React.FC<MeetingDetailModalProps> = ({
           onClose();
         }}
         onCancel={() => setShowDeleteConfirm(false)}
+      />
+
+      <DocumentPreviewModal
+        document={previewDoc}
+        onClose={() => setPreviewDoc(null)}
       />
     </div>
   );

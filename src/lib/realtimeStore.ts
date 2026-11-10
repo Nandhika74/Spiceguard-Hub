@@ -115,6 +115,11 @@ export function generateUuid(): string {
   });
 }
 
+export function isValidUuid(val: string | null | undefined): boolean {
+  if (!val) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim());
+}
+
 function playNotificationChime(): void {
   if (typeof window === 'undefined') return;
   try {
@@ -145,15 +150,25 @@ class RealtimeStore {
   private authSubscription: { unsubscribe: () => void } | null = null;
   private liveAlertTimeout: any = null;
   private syncPollingInterval: any = null;
-  private deletedTaskIds: Set<string> = new Set();
-  private deletedMilestoneIds: Set<string> = new Set();
+  private deletedTaskIds: Set<string>;
+  private deletedMilestoneIds: Set<string>;
+  private deletedDocIds: Set<string>;
+  private deletedMeetingIds: Set<string>;
+  private optimisticTaskGuards: Map<string, { task: Task; timestamp: number }> = new Map();
+  private optimisticDocGuards: Map<string, { doc: DocumentItem; timestamp: number }> = new Map();
+  private optimisticMeetingGuards: Map<string, { meeting: Meeting; timestamp: number }> = new Map();
 
   constructor() {
+    this.deletedTaskIds = new Set(loadFromStorage<string[]>('deleted_task_ids', []));
+    this.deletedMilestoneIds = new Set(loadFromStorage<string[]>('deleted_milestone_ids', []));
+    this.deletedDocIds = new Set(loadFromStorage<string[]>('deleted_doc_ids', []));
+    this.deletedMeetingIds = new Set(loadFromStorage<string[]>('deleted_meeting_ids', []));
+
     const supabaseReady = isSupabaseConfigured();
     const defaultUser = SEED_MEMBERS.find((m) => m.email.toLowerCase() === 'nandhikas3@gmail.com') || SEED_MEMBERS[2];
 
     if (supabaseReady) {
-      // Supabase mode: do not load localStorage or BroadcastChannel
+      // Supabase mode: load cached storage first to eliminate blank-state flashes, then refresh from server
       this.state = {
         authStatus: 'loading',
         authError: null,
@@ -163,10 +178,10 @@ class RealtimeStore {
         teamMembers: [],
         currentUser: defaultUser,
         allowedEmails: [],
-        milestones: [],
-        tasks: [],
-        meetings: [],
-        documents: [],
+        milestones: loadFromStorage<Milestone[]>('milestones', []),
+        tasks: loadFromStorage<Task[]>('tasks', []),
+        meetings: loadFromStorage<Meeting[]>('meetings', []),
+        documents: loadFromStorage<DocumentItem[]>('documents', []),
         notifications: [],
         activityLog: [],
         deletedTaskUndoStack: null,
@@ -932,12 +947,28 @@ class RealtimeStore {
 
     const currentTasks = this.state.tasks.filter((t) => !this.deletedTaskIds.has(t.id));
     const mergedTasks = parsedServerTasks.map((st) => {
-      const local = currentTasks.find((lt) => lt.id === st.id);
+      const local = currentTasks.find((lt) => lt.id === st.id || (lt.title && lt.title === st.title));
       if (!local) return st;
+
+      // Optimistic Guard: protect recent task actions (e.g. Done toggle, completion details) from stale server sync
+      if (this.optimisticTaskGuards.has(local.id)) {
+        const guard = this.optimisticTaskGuards.get(local.id)!;
+        const age = Date.now() - guard.timestamp;
+        if (age < 60000 && st.status !== guard.task.status) {
+          return {
+            ...st,
+            ...guard.task,
+            comments: local.comments || st.comments || [],
+          };
+        } else if (st.status === guard.task.status) {
+          this.optimisticTaskGuards.delete(local.id);
+        }
+      }
+
       const localTime = new Date(local.updated_at || 0).getTime();
       const serverTime = new Date(st.updated_at || 0).getTime();
-      // Keep optimistic local update if newer or in-flight
-      return localTime > serverTime ? local : st;
+      // Keep optimistic local update if newer or equal (avoid NTP / clock skew regressions)
+      return localTime >= serverTime ? local : st;
     });
     for (const lt of currentTasks) {
       if (!mergedTasks.some((t) => t.id === lt.id)) {
@@ -958,7 +989,7 @@ class RealtimeStore {
       if (!local) return fullSm;
       const localTime = new Date(local.updated_at || 0).getTime();
       const serverTime = new Date(sm.updated_at || 0).getTime();
-      return localTime > serverTime ? local : fullSm;
+      return localTime >= serverTime ? local : fullSm;
     });
     for (const lm of currentMilestones) {
       if (!mergedMilestones.some((m) => m.id === lm.id)) {
@@ -966,16 +997,86 @@ class RealtimeStore {
       }
     }
 
+    // Documents: Never blindly overwrite with server response! Merge gracefully, filter out deleted docs, and keep local uploads!
+    const serverDocsRaw = ((dRes.data || []) as DocumentItem[]).filter(
+      (d) => !this.deletedDocIds.has(d.id) && !this.deletedDocIds.has(d.title)
+    );
+    const currentDocs = this.state.documents.filter(
+      (d) => !this.deletedDocIds.has(d.id) && !this.deletedDocIds.has(d.title)
+    );
+    const mergedDocs = [...serverDocsRaw];
+    for (const cd of currentDocs) {
+      if (this.deletedDocIds.has(cd.id) || this.deletedDocIds.has(cd.title)) continue;
+      const exists = mergedDocs.some(
+        (sd) => sd.id === cd.id || (sd.title === cd.title && sd.file_url === cd.file_url)
+      );
+      if (!exists) {
+        mergedDocs.push(cd);
+      }
+    }
+
+    // Preserve in-flight / recent document uploads
+    for (const [docId, guard] of this.optimisticDocGuards.entries()) {
+      if (this.deletedDocIds.has(docId) || this.deletedDocIds.has(guard.doc.title)) continue;
+      const age = Date.now() - guard.timestamp;
+      if (age < 120000) {
+        if (!mergedDocs.some((d) => d.id === docId || d.title === guard.doc.title)) {
+          mergedDocs.unshift(guard.doc);
+        }
+      } else {
+        this.optimisticDocGuards.delete(docId);
+      }
+    }
+
+    const serverMeetingsRaw = ((mtgRes.data || []) as any[]).filter(
+      (m: any) => !this.deletedMeetingIds.has(m.id)
+    );
+    const currentMeetings = this.state.meetings.filter((m) => !this.deletedMeetingIds.has(m.id));
+    const mergedMeetings = serverMeetingsRaw.map((sm: any) => {
+      const fullSm: Meeting = {
+        ...sm,
+        action_items: actionsByMeeting.get(sm.id) || sm.action_items || [],
+        attachment_urls: sm.attachment_urls || [],
+      };
+      const local = currentMeetings.find((lm) => lm.id === sm.id);
+      if (!local) return fullSm;
+
+      // Optimistic Guard: protect recent meeting additions/edits
+      if (this.optimisticMeetingGuards.has(local.id)) {
+        const guard = this.optimisticMeetingGuards.get(local.id)!;
+        const age = Date.now() - guard.timestamp;
+        if (age < 60000) {
+          return {
+            ...fullSm,
+            ...guard.meeting,
+          };
+        }
+      }
+
+      const localTime = new Date(local.updated_at || 0).getTime();
+      const serverTime = new Date(sm.updated_at || 0).getTime();
+      return localTime >= serverTime ? local : fullSm;
+    });
+
+    for (const lm of currentMeetings) {
+      if (!mergedMeetings.some((m) => m.id === lm.id)) {
+        mergedMeetings.push(lm);
+      }
+    }
+
     this.state.milestones = mergedMilestones;
     this.state.tasks = mergedTasks;
-    this.state.meetings = (mtgRes.data || []).map((mt: any) => ({
-      ...mt,
-      action_items: actionsByMeeting.get(mt.id) || [],
-    }));
-    this.state.documents = (dRes.data || []) as DocumentItem[];
+    this.state.meetings = mergedMeetings;
+    this.state.documents = mergedDocs;
     this.state.notifications = (nRes.data || []) as NotificationItem[];
     this.state.activityLog = (aRes.data || []) as ActivityLogItem[];
     this.state.lastSyncTime = new Date();
+
+    // Cache to localStorage
+    saveToStorage('tasks', mergedTasks);
+    saveToStorage('milestones', mergedMilestones);
+    saveToStorage('meetings', mergedMeetings);
+    saveToStorage('documents', mergedDocs);
     this.recalculateAllMilestoneProgress();
     this.notify();
   }
@@ -1099,13 +1200,26 @@ class RealtimeStore {
 
   private handleDocumentRealtime(payload: any): void {
     if (payload.eventType === 'INSERT') {
-      this.state.documents = [payload.new, ...this.state.documents.filter((d) => d.id !== payload.new.id)];
+      const newDoc = payload.new as DocumentItem;
+      if (!this.deletedDocIds.has(newDoc.id) && !this.deletedDocIds.has(newDoc.title)) {
+        this.state.documents = [newDoc, ...this.state.documents.filter((d) => d.id !== newDoc.id)];
+        saveToStorage('documents', this.state.documents);
+      }
     } else if (payload.eventType === 'UPDATE') {
-      this.state.documents = this.state.documents.map((d) =>
-        d.id === payload.new.id ? { ...d, ...payload.new } : d
-      );
+      const updatedDoc = payload.new as DocumentItem;
+      if (!this.deletedDocIds.has(updatedDoc.id)) {
+        this.state.documents = this.state.documents.map((d) =>
+          d.id === updatedDoc.id ? { ...d, ...updatedDoc } : d
+        );
+        saveToStorage('documents', this.state.documents);
+      }
     } else if (payload.eventType === 'DELETE') {
+      if (payload.old?.id) {
+        this.deletedDocIds.add(payload.old.id);
+        saveToStorage('deleted_doc_ids', Array.from(this.deletedDocIds));
+      }
       this.state.documents = this.state.documents.filter((d) => d.id !== payload.old.id);
+      saveToStorage('documents', this.state.documents);
     }
     this.notify();
   }
@@ -1287,11 +1401,12 @@ class RealtimeStore {
     if (!supabase || !workspaceId) return;
 
     try {
-      const [tRes, mRes, aRes, nRes] = await Promise.all([
+      const [tRes, mRes, aRes, nRes, dRes] = await Promise.all([
         supabase.from('tasks').select('*').eq('workspace_id', workspaceId).order('sort_order', { ascending: true }),
         supabase.from('milestones').select('*').eq('workspace_id', workspaceId).order('sort_order', { ascending: true }),
         supabase.from('activity_log').select('*').eq('workspace_id', workspaceId).order('created_at', { ascending: false }).limit(50),
         supabase.from('notifications').select('*').eq('workspace_id', workspaceId).order('created_at', { ascending: false }),
+        supabase.from('documents').select('*').eq('workspace_id', workspaceId).order('created_at', { ascending: false }),
       ]);
 
       let changed = false;
@@ -1315,8 +1430,23 @@ class RealtimeStore {
         let taskDiff = false;
         const currentTasks = this.state.tasks.filter((t) => !this.deletedTaskIds.has(t.id));
         const mergedTasks = currentTasks.map((localTask) => {
-          const serverTask = parsedServerTasks.find((st) => st.id === localTask.id);
+          const serverTask = parsedServerTasks.find((st) => st.id === localTask.id || (st.title && st.title === localTask.title));
           if (!serverTask) return localTask;
+
+          // Check optimistic guard: protect recent user actions against stale server polling
+          if (this.optimisticTaskGuards.has(localTask.id)) {
+            const guard = this.optimisticTaskGuards.get(localTask.id)!;
+            const age = Date.now() - guard.timestamp;
+            if (age < 60000 && serverTask.status !== guard.task.status) {
+              return {
+                ...serverTask,
+                ...guard.task,
+                comments: localTask.comments || serverTask.comments || [],
+              };
+            } else if (serverTask.status === guard.task.status) {
+              this.optimisticTaskGuards.delete(localTask.id);
+            }
+          }
 
           const localTime = new Date(localTask.updated_at || 0).getTime();
           const serverTime = new Date(serverTask.updated_at || 0).getTime();
@@ -1342,7 +1472,52 @@ class RealtimeStore {
 
         if (taskDiff || mergedTasks.length !== currentTasks.length) {
           this.state.tasks = mergedTasks;
+          saveToStorage('tasks', mergedTasks);
           this.recalculateAllMilestoneProgress();
+          changed = true;
+        }
+      }
+
+      if (dRes && dRes.data) {
+        const serverDocsRaw = (dRes.data as DocumentItem[]).filter(
+          (d) => !this.deletedDocIds.has(d.id) && !this.deletedDocIds.has(d.title)
+        );
+        const currentDocs = this.state.documents.filter(
+          (d) => !this.deletedDocIds.has(d.id) && !this.deletedDocIds.has(d.title)
+        );
+
+        let docDiff = false;
+        const mergedDocs = [...serverDocsRaw];
+        for (const cd of currentDocs) {
+          if (this.deletedDocIds.has(cd.id) || this.deletedDocIds.has(cd.title)) {
+            docDiff = true;
+            continue;
+          }
+          const exists = mergedDocs.some(
+            (sd) => sd.id === cd.id || (sd.title === cd.title && sd.file_url === cd.file_url)
+          );
+          if (!exists) {
+            mergedDocs.push(cd);
+            docDiff = true;
+          }
+        }
+
+        for (const [docId, guard] of this.optimisticDocGuards.entries()) {
+          if (this.deletedDocIds.has(docId) || this.deletedDocIds.has(guard.doc.title)) continue;
+          const age = Date.now() - guard.timestamp;
+          if (age < 120000) {
+            if (!mergedDocs.some((d) => d.id === docId || d.title === guard.doc.title)) {
+              mergedDocs.unshift(guard.doc);
+              docDiff = true;
+            }
+          } else {
+            this.optimisticDocGuards.delete(docId);
+          }
+        }
+
+        if (docDiff || mergedDocs.length !== currentDocs.length) {
+          this.state.documents = mergedDocs;
+          saveToStorage('documents', mergedDocs);
           changed = true;
         }
       }
@@ -1379,6 +1554,7 @@ class RealtimeStore {
 
         if (milestoneDiff || mergedMilestones.length !== currentMilestones.length) {
           this.state.milestones = mergedMilestones;
+          saveToStorage('milestones', mergedMilestones);
           this.recalculateAllMilestoneProgress();
           changed = true;
         }
@@ -1925,7 +2101,10 @@ class RealtimeStore {
       comments: [],
     };
 
+    this.deletedTaskIds.delete(newTask.id);
+    this.optimisticTaskGuards.set(newTask.id, { task: { ...newTask }, timestamp: Date.now() });
     this.state.tasks = [...this.state.tasks, newTask];
+    saveToStorage('tasks', this.state.tasks);
     this.recalculateMilestoneProgress(data.milestone_id);
 
     this.logActivity('CREATE', 'task', newTask.id, `${this.state.currentUser.full_name} added task "${newTask.title}" to ${milestone.title}.`);
@@ -1941,9 +2120,19 @@ class RealtimeStore {
 
     const supabase = getSupabaseClient();
     if (supabase) {
+      let resolvedMilestoneId = newTask.milestone_id;
+      if (!isValidUuid(resolvedMilestoneId)) {
+        const uuidMs = this.state.milestones.find(
+          (m) => isValidUuid(m.id) && (m.id === resolvedMilestoneId || m.title.trim().toLowerCase() === milestone.title.trim().toLowerCase())
+        );
+        if (uuidMs) {
+          resolvedMilestoneId = uuidMs.id;
+        }
+      }
+
       const taskInsertPayload: Record<string, any> = {
         id: newTask.id,
-        milestone_id: newTask.milestone_id,
+        milestone_id: isValidUuid(resolvedMilestoneId) ? resolvedMilestoneId : null,
         title: newTask.title,
         assignee_id: newTask.assignee_id,
         assignee_name: newTask.assignee_name,
@@ -1963,7 +2152,7 @@ class RealtimeStore {
         .select()
         .then(({ data, error }) => {
           if (error) {
-            console.warn('Failed to insert task with workspace_id, retrying without workspace_id:', error);
+            console.warn('[addTask] Supabase tasks insert warning:', error.message);
             if (error.message?.includes('workspace_id')) {
               delete taskInsertPayload.workspace_id;
               supabase.from('tasks').insert(taskInsertPayload).then();
@@ -1971,6 +2160,9 @@ class RealtimeStore {
           } else if (data && data[0]?.id && data[0].id !== newTask.id) {
             const serverId = data[0].id;
             this.state.tasks = this.state.tasks.map((t) => (t.id === newTask.id ? { ...t, id: serverId } : t));
+            this.optimisticTaskGuards.delete(newTask.id);
+            this.optimisticTaskGuards.set(serverId, { task: { ...newTask, id: serverId }, timestamp: Date.now() });
+            saveToStorage('tasks', this.state.tasks);
             this.notify();
           }
         });
@@ -2041,7 +2233,9 @@ class RealtimeStore {
       updated_at: new Date().toISOString(),
     };
 
+    this.optimisticTaskGuards.set(id, { task: { ...updatedTask }, timestamp: Date.now() });
     this.state.tasks = this.state.tasks.map((t) => (t.id === id ? updatedTask : t));
+    saveToStorage('tasks', this.state.tasks);
 
     // Recalculate milestone progress for current milestone and old milestone if moved
     this.recalculateMilestoneProgress(updatedTask.milestone_id);
@@ -2052,8 +2246,7 @@ class RealtimeStore {
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase.from('tasks').update({
-        milestone_id: updatedTask.milestone_id,
+      const taskUpdatePayload: Record<string, any> = {
         title: updatedTask.title,
         assignee_id: updatedTask.assignee_id,
         assignee_name: updatedTask.assignee_name,
@@ -2064,7 +2257,17 @@ class RealtimeStore {
         completed_at: updatedTask.completed_at,
         updated_by: updatedTask.updated_by,
         updated_at: updatedTask.updated_at,
-      }).eq('id', id).then();
+      };
+      if (isValidUuid(updatedTask.milestone_id)) {
+        taskUpdatePayload.milestone_id = updatedTask.milestone_id;
+      }
+      if (isValidUuid(id)) {
+        supabase.from('tasks').update(taskUpdatePayload).eq('id', id).then();
+      } else {
+        const query = supabase.from('tasks').update(taskUpdatePayload).eq('title', updatedTask.title);
+        if (this.state.workspaceId) query.eq('workspace_id', this.state.workspaceId);
+        query.then();
+      }
     }
 
     this.broadcastEvent('TASK_MUTATION', {
@@ -2116,7 +2319,9 @@ class RealtimeStore {
       updated_at: completedAt,
     };
 
+    this.optimisticTaskGuards.set(id, { task: { ...updatedTask }, timestamp: Date.now() });
     this.state.tasks = this.state.tasks.map((t) => (t.id === id ? updatedTask : t));
+    saveToStorage('tasks', this.state.tasks);
     this.recalculateMilestoneProgress(task.milestone_id);
 
     const docNote = details.completion_document_title
@@ -2155,21 +2360,32 @@ class RealtimeStore {
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase
-        .from('tasks')
-        .update({
-          status: 'Done',
-          completed_at: completedAt,
-          notes: packedNotes,
-          updated_by: updatedTask.updated_by,
-          updated_at: updatedTask.updated_at,
-        })
-        .eq('id', id)
-        .then(({ error }) => {
+      const taskUpdatePayload = {
+        status: 'Done' as const,
+        completed_at: completedAt,
+        notes: packedNotes,
+        updated_by: updatedTask.updated_by,
+        updated_at: updatedTask.updated_at,
+      };
+      if (isValidUuid(id)) {
+        supabase
+          .from('tasks')
+          .update(taskUpdatePayload)
+          .eq('id', id)
+          .then(({ error }) => {
+            if (error) {
+              console.warn('[completeTaskWithDetails] Supabase tasks update warning:', error.message);
+            }
+          });
+      } else {
+        const query = supabase.from('tasks').update(taskUpdatePayload).eq('title', task.title);
+        if (this.state.workspaceId) query.eq('workspace_id', this.state.workspaceId);
+        query.then(({ error }) => {
           if (error) {
-            console.warn('[completeTaskWithDetails] Supabase tasks update warning:', error.message);
+            console.warn('[completeTaskWithDetails] Supabase title update warning:', error.message);
           }
         });
+      }
     }
 
     this.notify();
@@ -2218,7 +2434,9 @@ class RealtimeStore {
       updated_at: new Date().toISOString(),
     };
 
+    this.optimisticTaskGuards.set(id, { task: { ...updatedTask }, timestamp: Date.now() });
     this.state.tasks = this.state.tasks.map((t) => (t.id === id ? updatedTask : t));
+    saveToStorage('tasks', this.state.tasks);
     this.recalculateMilestoneProgress(task.milestone_id);
 
     const actor = this.state.currentUser.full_name;
@@ -2257,21 +2475,32 @@ class RealtimeStore {
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase
-        .from('tasks')
-        .update({
-          status: newStatus,
-          completed_at: completedAt,
-          notes: packedNotes,
-          updated_by: updatedTask.updated_by,
-          updated_at: updatedTask.updated_at,
-        })
-        .eq('id', id)
-        .then(({ error }) => {
+      const taskUpdatePayload = {
+        status: newStatus,
+        completed_at: completedAt,
+        notes: packedNotes,
+        updated_by: updatedTask.updated_by,
+        updated_at: updatedTask.updated_at,
+      };
+      if (isValidUuid(id)) {
+        supabase
+          .from('tasks')
+          .update(taskUpdatePayload)
+          .eq('id', id)
+          .then(({ error }) => {
+            if (error) {
+              console.warn('[toggleTaskStatus] Supabase tasks update warning:', error.message);
+            }
+          });
+      } else {
+        const query = supabase.from('tasks').update(taskUpdatePayload).eq('title', task.title);
+        if (this.state.workspaceId) query.eq('workspace_id', this.state.workspaceId);
+        query.then(({ error }) => {
           if (error) {
-            console.warn('[toggleTaskStatus] Supabase tasks update warning:', error.message);
+            console.warn('[toggleTaskStatus] Supabase title update warning:', error.message);
           }
         });
+      }
     }
 
     this.notify();
@@ -2284,6 +2513,8 @@ class RealtimeStore {
 
     // Mark as deleted in tracking set so poller never resurrects it
     this.deletedTaskIds.add(id);
+    this.optimisticTaskGuards.delete(id);
+    saveToStorage('deleted_task_ids', Array.from(this.deletedTaskIds));
 
     // Clear any previous undo timeout
     if (this.state.deletedTaskUndoStack) {
@@ -2304,6 +2535,7 @@ class RealtimeStore {
 
     // Remove from active state immediately (optimistic UI)
     this.state.tasks = this.state.tasks.filter((t) => t.id !== id);
+    saveToStorage('tasks', this.state.tasks);
     this.recalculateMilestoneProgress(task.milestone_id);
     this.logActivity('DELETE', 'task', id, `${this.state.currentUser.full_name} deleted task "${task.title}".`);
 
@@ -2317,11 +2549,21 @@ class RealtimeStore {
     // IMMEDIATELY DELETE FROM SUPABASE
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase.from('tasks').delete().eq('id', id).then(({ error }) => {
-        if (error) {
-          console.warn('[deleteTask] Supabase delete warning:', error.message);
-        }
-      });
+      if (isValidUuid(id)) {
+        supabase.from('tasks').delete().eq('id', id).then(({ error }) => {
+          if (error) {
+            console.warn('[deleteTask] Supabase delete warning:', error.message);
+          }
+        });
+      } else {
+        const query = supabase.from('tasks').delete().eq('title', task.title);
+        if (this.state.workspaceId) query.eq('workspace_id', this.state.workspaceId);
+        query.then(({ error }) => {
+          if (error) {
+            console.warn('[deleteTask] Supabase delete by title warning:', error.message);
+          }
+        });
+      }
     }
 
     this.notify();
@@ -2339,8 +2581,10 @@ class RealtimeStore {
 
     // Remove from deleted tracking set
     this.deletedTaskIds.delete(restoredTask.id);
+    saveToStorage('deleted_task_ids', Array.from(this.deletedTaskIds));
 
     this.state.tasks = [...this.state.tasks, restoredTask];
+    saveToStorage('tasks', this.state.tasks);
     this.recalculateMilestoneProgress(restoredTask.milestone_id);
     this.logActivity('RESTORE', 'task', restoredTask.id, `${this.state.currentUser.full_name} restored task "${restoredTask.title}".`);
 
@@ -2534,6 +2778,8 @@ class RealtimeStore {
       });
     }
 
+    this.optimisticMeetingGuards.set(newMeeting.id, { meeting: newMeeting, timestamp: Date.now() });
+    saveToStorage('meetings', this.state.meetings);
     this.notify();
     return newMeeting;
   }
@@ -2554,6 +2800,8 @@ class RealtimeStore {
     };
 
     this.state.meetings = this.state.meetings.map((m) => (m.id === id ? updated : m));
+    this.optimisticMeetingGuards.set(id, { meeting: updated, timestamp: Date.now() });
+    saveToStorage('meetings', this.state.meetings);
     this.logActivity('UPDATE', 'meeting', id, `${this.state.currentUser.full_name} updated meeting "${existing.title}".`);
 
     const supabase = getSupabaseClient();
@@ -2581,7 +2829,11 @@ class RealtimeStore {
     const existing = this.state.meetings.find((m) => m.id === id);
     if (!existing) return { success: false, message: 'Meeting not found.' };
 
+    this.deletedMeetingIds.add(id);
+    saveToStorage('deleted_meeting_ids', Array.from(this.deletedMeetingIds));
+    this.optimisticMeetingGuards.delete(id);
     this.state.meetings = this.state.meetings.filter((m) => m.id !== id);
+    saveToStorage('meetings', this.state.meetings);
     this.logActivity('DELETE', 'meeting', id, `${this.state.currentUser.full_name} deleted meeting "${existing.title}".`);
 
     const supabase = getSupabaseClient();
@@ -2660,8 +2912,35 @@ class RealtimeStore {
       updated_at: new Date().toISOString(),
     };
 
+    // Remove from deleted tracker in case this title/id was previously marked deleted
+    this.deletedDocIds.delete(newDoc.id);
+    if (newDoc.title) {
+      this.deletedDocIds.delete(newDoc.title);
+    }
+    saveToStorage('deleted_doc_ids', Array.from(this.deletedDocIds));
+
+    // Register optimistic guard so polling and window focus never discard this document
+    this.optimisticDocGuards.set(newDoc.id, { doc: newDoc, timestamp: Date.now() });
+    this.state.documents = [newDoc, ...this.state.documents.filter((d) => d.id !== newDoc.id)];
+    saveToStorage('documents', this.state.documents);
+
     const supabase = getSupabaseClient();
     if (supabase) {
+      // Ensure milestone_id is a valid UUID; non-UUID strings like 'm-1' will crash PostgreSQL UUID column
+      let resolvedMilestoneId: string | null = null;
+      if (newDoc.milestone_id) {
+        if (isValidUuid(newDoc.milestone_id)) {
+          resolvedMilestoneId = newDoc.milestone_id;
+        } else {
+          const matchedMs = this.state.milestones.find(
+            (m) => isValidUuid(m.id) && (m.id === newDoc.milestone_id || m.phase_label?.toLowerCase() === newDoc.milestone_id?.toLowerCase())
+          );
+          if (matchedMs) {
+            resolvedMilestoneId = matchedMs.id;
+          }
+        }
+      }
+
       const docPayload: Record<string, any> = {
         id: newDoc.id,
         title: newDoc.title,
@@ -2673,7 +2952,7 @@ class RealtimeStore {
         file_size: newDoc.file_size || null,
         file_type: newDoc.file_type || null,
         is_external_link: Boolean(newDoc.is_external_link),
-        milestone_id: newDoc.milestone_id || null,
+        milestone_id: resolvedMilestoneId,
         uploaded_by: newDoc.uploaded_by,
         uploaded_by_name: newDoc.uploaded_by_name,
       };
@@ -2701,7 +2980,6 @@ class RealtimeStore {
       await Promise.race([insertPromise, timeoutPromise]);
     }
 
-    this.state.documents = [newDoc, ...this.state.documents.filter((d) => d.id !== newDoc.id)];
     this.logActivity('UPLOAD', 'document', newDoc.id, `${this.state.currentUser.full_name} uploaded document "${newDoc.title}".`);
     this.notify();
     return { success: true, document: newDoc };
@@ -2770,7 +3048,15 @@ class RealtimeStore {
     const existing = this.state.documents.find((d) => d.id === id);
     if (!existing) return { success: false, message: 'Document not found.' };
 
+    this.deletedDocIds.add(id);
+    if (existing.title) {
+      this.deletedDocIds.add(existing.title);
+    }
+    this.optimisticDocGuards.delete(id);
+    saveToStorage('deleted_doc_ids', Array.from(this.deletedDocIds));
+
     this.state.documents = this.state.documents.filter((d) => d.id !== id);
+    saveToStorage('documents', this.state.documents);
     this.logActivity('DELETE', 'document', id, `${this.state.currentUser.full_name} deleted document "${existing.title}".`);
 
     // Clean up references in tasks: unlink this document from any task that was referencing it
@@ -2804,7 +3090,13 @@ class RealtimeStore {
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase.from('documents').delete().eq('id', id).then();
+      if (isValidUuid(id)) {
+        supabase.from('documents').delete().eq('id', id).then();
+      } else {
+        const query = supabase.from('documents').delete().eq('title', existing.title);
+        if (this.state.workspaceId) query.eq('workspace_id', this.state.workspaceId);
+        query.then();
+      }
 
       // Persist unlinked tasks to Supabase
       affectedTasks.forEach((t) => {

@@ -21,6 +21,65 @@ import {
 
 import { MeetingDetailModal } from './MeetingDetailModal';
 import { ConfirmDeleteModal } from '../ui/ConfirmDeleteModal';
+import { DocumentPreviewModal } from '../Documents/DocumentPreviewModal';
+
+const getMemberDetails = (nameOrEmail: string, teamMembers: any[]) => {
+  const q = nameOrEmail.toLowerCase().trim();
+  const found =
+    teamMembers.find(
+      (m) =>
+        m.email.toLowerCase() === q ||
+        m.full_name.toLowerCase() === q ||
+        m.full_name.toLowerCase().includes(q) ||
+        q.includes(m.full_name.toLowerCase().split(' ')[0])
+    ) ||
+    SEED_MEMBERS.find(
+      (m) =>
+        m.email.toLowerCase() === q ||
+        m.full_name.toLowerCase() === q ||
+        m.full_name.toLowerCase().includes(q) ||
+        q.includes(m.full_name.toLowerCase().split(' ')[0])
+    );
+
+  if (found) {
+    const parts = found.full_name.split(' ');
+    const initials =
+      parts.length > 1
+        ? `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase()
+        : parts[0].substring(0, 2).toUpperCase();
+    return {
+      name: found.full_name,
+      shortName: parts[0],
+      initials,
+      color: found.avatar_color || '#164E33',
+    };
+  }
+
+  const clean = nameOrEmail.trim();
+  const initials = clean.length >= 2 ? clean.substring(0, 2).toUpperCase() : clean.toUpperCase();
+  return {
+    name: clean,
+    shortName: clean,
+    initials,
+    color: '#4B5563',
+  };
+};
+
+const formatMeetingDateDisplay = (dateString?: string | null) => {
+  if (!dateString) return 'Not set';
+  try {
+    const d = new Date(dateString);
+    if (isNaN(d.getTime())) return dateString;
+    const day = d.getDate();
+    const month = d.toLocaleDateString('en-US', { month: 'short' });
+    const year = d.getFullYear();
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    return `${day} ${month} ${year} · ${hours}:${minutes}`;
+  } catch {
+    return dateString;
+  }
+};
 
 export const MeetingsView: React.FC = () => {
   const {
@@ -30,6 +89,8 @@ export const MeetingsView: React.FC = () => {
     convertActionItemToTask,
     currentUser,
     isTeamLead,
+    teamMembers,
+    documents,
   } = useRealtimeStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -38,6 +99,7 @@ export const MeetingsView: React.FC = () => {
   const [meetingToEdit, setMeetingToEdit] = useState<Meeting | null>(null);
   const [detailMeeting, setDetailMeeting] = useState<Meeting | null>(null);
   const [meetingToDelete, setMeetingToDelete] = useState<Meeting | null>(null);
+  const [previewDoc, setPreviewDoc] = useState<any | null>(null);
 
   // Milestone selection for converting action items
   const [selectedMilestoneForConvert, setSelectedMilestoneForConvert] = useState<Record<string, string>>({});
@@ -172,13 +234,11 @@ export const MeetingsView: React.FC = () => {
               isTeamLead || meeting.created_by.toLowerCase() === currentUser.email.toLowerCase();
             const actionCount = meeting.action_items?.length || 0;
 
-            // Extract initial avatars for attendees
-            const attendeesInitialList = [
-              { initials: 'AS', color: '#1D604E' },
-              { initials: 'SS', color: '#E89234' },
-              { initials: 'NS', color: '#164E33' },
-              { initials: 'NM', color: '#11472B' },
-            ];
+            // Extract dynamic attendee details
+            const attendeesList = (meeting.attendees || []).map((att) =>
+              getMemberDetails(att, teamMembers)
+            );
+            const attendeeCount = meeting.attendees?.length || 0;
 
             return (
               <div
@@ -233,7 +293,7 @@ export const MeetingsView: React.FC = () => {
                 {/* Date & Time */}
                 <p className="text-xs text-stone-500 mt-1 flex items-center gap-1.5">
                   <Calendar className="w-3.5 h-3.5 text-stone-400" />
-                  <span>4 Nov 2026 · 02:00</span>
+                  <span>{formatMeetingDateDisplay(meeting.meeting_date)}</span>
                 </p>
 
                 {/* Inferences / Topics highlight tag container matching image_5523de88.png */}
@@ -249,20 +309,23 @@ export const MeetingsView: React.FC = () => {
                 <div className="mt-4 pt-3 border-t border-stone-100 flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
                     {/* Overlapping Avatar Stack */}
-                    <div className="flex items-center -space-x-1.5">
-                      {attendeesInitialList.map((a, i) => (
-                        <div
-                          key={i}
-                          className="w-5 h-5 rounded-full text-white text-[9px] font-bold flex items-center justify-center border border-white shadow-2xs"
-                          style={{ backgroundColor: a.color }}
-                        >
-                          {a.initials}
-                        </div>
-                      ))}
-                    </div>
+                    {attendeesList.length > 0 && (
+                      <div className="flex items-center -space-x-1.5">
+                        {attendeesList.map((a, i) => (
+                          <div
+                            key={i}
+                            title={a.name}
+                            className="w-5 h-5 rounded-full text-white text-[9px] font-bold flex items-center justify-center border border-white shadow-2xs"
+                            style={{ backgroundColor: a.color }}
+                          >
+                            {a.initials}
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     <span className="text-xs text-stone-500 font-medium">
-                      4 attendees · by {meeting.created_by_name || 'Nandhika S'}
+                      {attendeeCount} {attendeeCount === 1 ? 'attendee' : 'attendees'} · by {meeting.created_by_name || 'Team member'}
                     </span>
                   </div>
 
@@ -378,21 +441,50 @@ export const MeetingsView: React.FC = () => {
                     {meeting.attachment_urls && meeting.attachment_urls.length > 0 && (
                       <div>
                         <h4 className="font-bold text-stone-800 uppercase text-[10px] tracking-wider mb-1.5">
-                          Attached Files ({meeting.attachment_urls.length})
+                          Attached Files & Linked Docs ({meeting.attachment_urls.length})
                         </h4>
                         <div className="flex flex-wrap gap-2">
-                          {meeting.attachment_urls.map((att, i) => (
-                            <a
-                              key={i}
-                              href={att.url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs transition"
-                            >
-                              <Paperclip className="w-3.5 h-3.5 text-stone-400" />
-                              <span>{att.name}</span>
-                            </a>
-                          ))}
+                          {meeting.attachment_urls.map((att, i) => {
+                            const handleOpenAttachment = () => {
+                              const matchingDoc = documents.find(
+                                (d) =>
+                                  d.id === (att as any).document_id ||
+                                  d.title.toLowerCase() === att.name.toLowerCase() ||
+                                  d.file_url === att.url
+                              );
+                              if (matchingDoc) {
+                                setPreviewDoc(matchingDoc);
+                              } else {
+                                setPreviewDoc({
+                                  id: (att as any).document_id || `att-${meeting.id}-${i}`,
+                                  title: att.name,
+                                  file_name: att.name,
+                                  file_url: att.url,
+                                  file_size: att.size,
+                                  category: 'Plant Lipids data',
+                                  tags: ['Meeting Attachment'],
+                                  is_external_link: false,
+                                  uploaded_by: meeting.created_by,
+                                  uploaded_by_name: meeting.created_by_name || 'Team member',
+                                  created_at: meeting.created_at,
+                                  updated_at: meeting.updated_at,
+                                });
+                              }
+                            };
+
+                            return (
+                              <button
+                                key={i}
+                                type="button"
+                                onClick={handleOpenAttachment}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-100 hover:bg-emerald-50 hover:text-emerald-900 border border-stone-200 text-stone-700 text-xs transition cursor-pointer"
+                                title="Click to preview attachment"
+                              >
+                                <Paperclip className="w-3.5 h-3.5 text-stone-400 group-hover:text-emerald-700" />
+                                <span>{att.name}</span>
+                              </button>
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -436,6 +528,12 @@ export const MeetingsView: React.FC = () => {
           }
         }}
         onCancel={() => setMeetingToDelete(null)}
+      />
+
+      {/* Document Preview Modal */}
+      <DocumentPreviewModal
+        document={previewDoc}
+        onClose={() => setPreviewDoc(null)}
       />
     </div>
   );
