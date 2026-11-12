@@ -26,7 +26,7 @@ export const MeetingFormModal: React.FC<MeetingFormModalProps> = ({
   onClose,
   meetingToEdit,
 }) => {
-  const { addMeeting, updateMeeting, currentUser, teamMembers, documents } = useRealtimeStore();
+  const { addMeeting, updateMeeting, addDocument, currentUser, teamMembers, documents } = useRealtimeStore();
 
   const isEditing = Boolean(meetingToEdit);
 
@@ -140,9 +140,33 @@ export const MeetingFormModal: React.FC<MeetingFormModalProps> = ({
         } catch {
           permanentUrl = URL.createObjectURL(f);
         }
+
+        // Also register in workspace documents so it can be accessed in Docs section too
+        let registeredDocId: string | undefined;
+        try {
+          const docTitle = f.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ') || f.name;
+          const addDocRes = await addDocument({
+            title: docTitle,
+            description: `Attached to meeting "${title || 'Meeting log'}"`,
+            category: 'Plant Lipids data',
+            tags: ['Meeting attachment', type],
+            file_url: permanentUrl,
+            file_name: f.name,
+            file_size: f.size,
+            file_type: f.type || 'application/octet-stream',
+            attachments: [{ name: f.name, url: permanentUrl, size: f.size, type: f.type }],
+            is_external_link: false,
+          });
+          if (addDocRes.success && addDocRes.document) {
+            registeredDocId = addDocRes.document.id;
+          }
+        } catch (docErr) {
+          console.warn('[MeetingFormModal] Could not register file in documents:', docErr);
+        }
+
         setAttachments((prev) => [
           ...prev,
-          { name: f.name, url: permanentUrl, size: f.size },
+          { name: f.name, url: permanentUrl, size: f.size, document_id: registeredDocId },
         ]);
       }
     } finally {

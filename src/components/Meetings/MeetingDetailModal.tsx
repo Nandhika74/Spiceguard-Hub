@@ -292,13 +292,25 @@ export const MeetingDetailModal: React.FC<MeetingDetailModalProps> = ({
                           ) : null}
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={handleOpenAttachment}
-                        className="px-2.5 py-1 text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition shrink-0 cursor-pointer"
-                      >
-                        Preview
-                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={handleOpenAttachment}
+                          className="px-2.5 py-1 text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition cursor-pointer"
+                        >
+                          Preview
+                        </button>
+                        <a
+                          href={att.url}
+                          download={att.name}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="p-1 text-stone-400 hover:text-emerald-800 hover:bg-stone-100 rounded-lg transition"
+                          title="Download or open in new tab"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
+                      </div>
                     </div>
                   );
                 })}

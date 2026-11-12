@@ -20,78 +20,44 @@ export async function uploadDocumentFile(
   docId: string,
   file: File
 ): Promise<{ path: string | null; error?: string }> {
+  // Always produce a self-contained Data URL so previews, downloads, and rendering
+  // work instantaneously without relying on unstable remote storage buckets.
+  let dataUrl: string | null = null;
+  try {
+    dataUrl = await readFileAsDataUrl(file);
+  } catch (err: any) {
+    console.warn('[uploadDocumentFile] Failed to read file as data URL:', err?.message || err);
+  }
+
   const supabase = getSupabaseClient();
-  if (!supabase) {
-    try {
-      const dataUrl = await readFileAsDataUrl(file);
-      return { path: dataUrl };
-    } catch {
-      return { path: null, error: 'Supabase is not configured and file read failed.' };
-    }
-  }
+  if (supabase) {
+    // Optionally mirror file to Supabase storage in background without failing user experience
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const uniqueSuffix = Math.random().toString(36).substring(2, 7);
+    const storagePath = `${workspaceId}/${docId}/${Date.now()}-${uniqueSuffix}-${safeName}`;
 
-  try {
-    const slice = await file.slice(0, 16).arrayBuffer();
-    const bytes = new Uint8Array(slice);
-    const hex = Array.from(bytes)
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join(' ');
-    const isPdfHeader = String.fromCharCode(...bytes.slice(0, 5)) === '%PDF-';
-    console.log('[Storage Upload]', {
-      name: file.name,
-      type: file.type,
-      size: file.size,
-      first16Hex: hex,
-      startsWithPdf: isPdfHeader,
-    });
-  } catch {
-    // ignore diagnostic read error
-  }
-
-  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const uniqueSuffix = Math.random().toString(36).substring(2, 7);
-  const storagePath = `${workspaceId}/${docId}/${Date.now()}-${uniqueSuffix}-${safeName}`;
-
-  try {
-    const uploadPromise = supabase.storage
+    supabase.storage
       .from(DOCUMENTS_BUCKET)
       .upload(storagePath, file, {
         cacheControl: '3600',
         upsert: false,
         contentType: file.type || 'application/octet-stream',
+      })
+      .then(({ error }) => {
+        if (error) {
+          console.warn('[uploadDocumentFile] Background Supabase upload note:', error.message);
+        }
+      })
+      .catch((err) => {
+        console.warn('[uploadDocumentFile] Background Supabase upload error:', err?.message || err);
       });
-
-    const timeoutPromise = new Promise<{ data: null; error: { message: string } }>((resolve) =>
-      setTimeout(
-        () =>
-          resolve({
-            data: null,
-            error: { message: 'Storage upload timed out; switching to instant inline storage.' },
-          }),
-        3500
-      )
-    );
-
-    const { data, error } = await Promise.race([uploadPromise, timeoutPromise]);
-
-    if (error || !data) {
-      console.warn(
-        `[uploadDocumentFile] Storage upload fallback (${error?.message || 'no data'}). Saving inline Data URL.`
-      );
-      const dataUrl = await readFileAsDataUrl(file);
-      return { path: dataUrl };
-    }
-
-    return { path: data.path };
-  } catch (err: any) {
-    console.warn(`[uploadDocumentFile] Storage error (${err?.message || err}). Falling back to inline data URL.`);
-    try {
-      const dataUrl = await readFileAsDataUrl(file);
-      return { path: dataUrl };
-    } catch {
-      return { path: null, error: err?.message || 'Storage upload failed' };
-    }
   }
+
+  if (dataUrl) {
+    return { path: dataUrl };
+  }
+
+  return { path: null, error: 'Could not read file data.' };
 }
 
 export async function deleteDocumentFile(pathOrUrl?: string | null): Promise<void> {
@@ -113,11 +79,22 @@ export async function downloadDocumentBlob(
 
   if (pathOrUrl.startsWith('data:')) {
     try {
-      const resp = await fetch(pathOrUrl);
-      const blob = await resp.blob();
-      return { blob };
+      const parts = pathOrUrl.split(',');
+      const mime = parts[0].match(/:(.*?);/)?.[1] || 'application/octet-stream';
+      const binary = atob(parts[1]);
+      const array = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        array[i] = binary.charCodeAt(i);
+      }
+      return { blob: new Blob([array], { type: mime }) };
     } catch {
-      return { blob: null, error: 'Failed to convert data URL to file.' };
+      try {
+        const resp = await fetch(pathOrUrl);
+        const blob = await resp.blob();
+        return { blob };
+      } catch {
+        return { blob: null, error: 'Failed to convert data URL to file.' };
+      }
     }
   }
 
@@ -136,52 +113,57 @@ export async function downloadDocumentBlob(
 
   const supabase = getSupabaseClient();
   if (!supabase) {
-    return { blob: null, error: 'Supabase is not configured.' };
+    return { blob: null, error: 'Storage is not configured.' };
   }
 
-  // Primary: fetch via fresh signed URL (same storage object endpoint that Download uses)
-  const signedUrl = await getSignedDocumentUrl(pathOrUrl);
-  if (signedUrl) {
-    try {
-      const resp = await fetch(signedUrl);
+  // 1. Try direct SDK download first (avoids /object/sign 500)
+  try {
+    const { data, error } = await supabase.storage
+      .from(DOCUMENTS_BUCKET)
+      .download(pathOrUrl);
+
+    if (!error && data && data.size > 0) {
+      return { blob: data };
+    }
+  } catch (err: any) {
+    console.warn('[downloadDocumentBlob] SDK download error:', err?.message || err);
+  }
+
+  // 2. Try public URL
+  try {
+    const { data: pubData } = supabase.storage
+      .from(DOCUMENTS_BUCKET)
+      .getPublicUrl(pathOrUrl);
+
+    if (pubData?.publicUrl) {
+      const resp = await fetch(pubData.publicUrl);
       if (resp.ok) {
         const blob = await resp.blob();
-        if (blob.size > 0) {
-          return { blob };
-        }
+        if (blob.size > 0) return { blob };
       }
-    } catch {
-      // Fall through to SDK download
     }
-  }
-
-  // Fallback: authenticated SDK download
-  const { data, error } = await supabase.storage
-    .from(DOCUMENTS_BUCKET)
-    .download(pathOrUrl);
-
-  if (error || !data) {
-    return { blob: null, error: error?.message || 'File not found in storage.' };
-  }
-
-  try {
-    const slice = await data.slice(0, 16).arrayBuffer();
-    const bytes = new Uint8Array(slice);
-    const hex = Array.from(bytes)
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join(' ');
-    const isPdfHeader = String.fromCharCode(...bytes.slice(0, 5)) === '%PDF-';
-    console.log('[Storage Download]', {
-      type: data.type,
-      size: data.size,
-      first16Hex: hex,
-      startsWithPdf: isPdfHeader,
-    });
   } catch {
-    // ignore diagnostic read error
+    // ignore
   }
 
-  return { blob: data };
+  // 3. Fallback: try createSignedUrl only as last resort inside try/catch
+  try {
+    const { data, error } = await supabase.storage
+      .from(DOCUMENTS_BUCKET)
+      .createSignedUrl(pathOrUrl, 3600);
+
+    if (!error && data?.signedUrl) {
+      const resp = await fetch(data.signedUrl);
+      if (resp.ok) {
+        const blob = await resp.blob();
+        if (blob.size > 0) return { blob };
+      }
+    }
+  } catch (err: any) {
+    console.warn('[downloadDocumentBlob] Signed URL fallback note:', err?.message || err);
+  }
+
+  return { blob: null, error: 'File not found in storage.' };
 }
 
 export async function getSignedDocumentUrl(
@@ -201,17 +183,30 @@ export async function getSignedDocumentUrl(
     return null;
   }
 
-  const { data, error } = await supabase.storage
-    .from(DOCUMENTS_BUCKET)
-    .createSignedUrl(
-      pathOrUrl,
-      3600,
-      downloadFileName ? { download: downloadFileName } : undefined
-    );
+  try {
+    const { data, error } = await supabase.storage
+      .from(DOCUMENTS_BUCKET)
+      .createSignedUrl(
+        pathOrUrl,
+        3600,
+        downloadFileName ? { download: downloadFileName } : undefined
+      );
 
-  if (error || !data?.signedUrl) {
-    return null;
+    if (!error && data?.signedUrl) {
+      return data.signedUrl;
+    }
+  } catch {
+    // catch 500 error from signed URL endpoint
   }
 
-  return data.signedUrl;
+  try {
+    const { data } = supabase.storage.from(DOCUMENTS_BUCKET).getPublicUrl(pathOrUrl);
+    if (data?.publicUrl) {
+      return data.publicUrl;
+    }
+  } catch {
+    // ignore
+  }
+
+  return null;
 }

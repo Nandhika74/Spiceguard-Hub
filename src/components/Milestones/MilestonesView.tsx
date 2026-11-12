@@ -9,6 +9,8 @@ import { TaskFormModal } from './TaskFormModal';
 import { MilestoneDateHistoryModal } from './MilestoneDateHistoryModal';
 import { TaskCommentsModal } from './TaskCommentsModal';
 import { TaskCompletionModal } from './TaskCompletionModal';
+import { DocumentPreviewModal } from '../Documents/DocumentPreviewModal';
+import { DocumentItem } from '../../types';
 import { ConfirmDeleteModal } from '../ui/ConfirmDeleteModal';
 import { StatCard } from '../ui/StatCard';
 import { ChartCard } from '../ui/ChartCard';
@@ -50,6 +52,7 @@ export const MilestonesView: React.FC = () => {
     duplicateMilestone,
     archiveMilestone,
     deleteMilestone,
+    documents,
   } = useRealtimeStore();
 
   const [currentView, setCurrentView] = useState<'list' | 'board' | 'timeline'>('list');
@@ -68,6 +71,7 @@ export const MilestonesView: React.FC = () => {
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [targetMilestoneForTask, setTargetMilestoneForTask] = useState<string | undefined>(undefined);
   const [taskToEdit, setTaskToEdit] = useState<Task | null>(null);
+  const [previewDoc, setPreviewDoc] = useState<DocumentItem | null>(null);
 
   const [taskForCompletionModal, setTaskForCompletionModal] = useState<Task | null>(null);
 
@@ -743,6 +747,11 @@ export const MilestonesView: React.FC = () => {
         }}
         onCancel={() => setMilestoneToDelete(null)}
       />
+      {/* Document Preview Modal */}
+      <DocumentPreviewModal
+        document={previewDoc}
+        onClose={() => setPreviewDoc(null)}
+      />
     </div>
   );
 
@@ -850,12 +859,29 @@ export const MilestonesView: React.FC = () => {
                   </p>
                 )}
 
-                {isDone && task.completion_document_title && (
-                  <div className="flex items-center gap-1.5 text-[10px] font-semibold text-emerald-900 bg-white px-2 py-1 rounded-md border border-emerald-200 shadow-2xs truncate">
-                    <FileText className="w-3 h-3 text-emerald-700 shrink-0" />
-                    <span className="truncate">{task.completion_document_title}</span>
-                  </div>
-                )}
+                {/* Attached doc on board card (Only shown if document still exists in workspace documents) */}
+                {(() => {
+                  if (!isDone) return null;
+                  const linkedDoc = documents.find(
+                    (d) =>
+                      (task.completion_document_id && d.id === task.completion_document_id) ||
+                      (task.completion_document_title &&
+                        d.title.trim().toLowerCase() === task.completion_document_title.trim().toLowerCase())
+                  );
+                  if (!linkedDoc) return null;
+
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => setPreviewDoc(linkedDoc)}
+                      className="flex items-center gap-1.5 text-[10px] font-semibold text-emerald-900 bg-white hover:bg-emerald-50 px-2 py-1 rounded-md border border-emerald-200 shadow-2xs truncate text-left transition cursor-pointer"
+                      title="Click to preview document"
+                    >
+                      <FileText className="w-3 h-3 text-emerald-700 shrink-0" />
+                      <span className="truncate">{linkedDoc.title}</span>
+                    </button>
+                  );
+                })()}
 
                 {/* Bottom Row: Assignee Avatar & Actions */}
                 <div className="pt-1 flex items-center justify-between border-t border-stone-50">

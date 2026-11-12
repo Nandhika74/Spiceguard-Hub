@@ -17,6 +17,8 @@ import {
   ChevronUp,
   SlidersHorizontal,
   ArrowRight,
+  FileText,
+  ExternalLink,
 } from 'lucide-react';
 
 import { MeetingDetailModal } from './MeetingDetailModal';
@@ -113,6 +115,36 @@ export const MeetingsView: React.FC = () => {
       ...prev,
       [id]: !prev[id],
     }));
+  };
+
+  const handleOpenAttachment = (
+    att: { name: string; url: string; size?: number; document_id?: string },
+    meeting: Meeting
+  ) => {
+    const matchingDoc = documents.find(
+      (d) =>
+        d.id === (att as any).document_id ||
+        d.title.toLowerCase() === att.name.toLowerCase() ||
+        d.file_url === att.url
+    );
+    if (matchingDoc) {
+      setPreviewDoc(matchingDoc);
+    } else {
+      setPreviewDoc({
+        id: (att as any).document_id || `att-${meeting.id}-${att.name}`,
+        title: att.name,
+        file_name: att.name,
+        file_url: att.url,
+        file_size: att.size,
+        category: 'Plant Lipids data',
+        tags: ['Meeting Attachment'],
+        is_external_link: false,
+        uploaded_by: meeting.created_by,
+        uploaded_by_name: meeting.created_by_name || 'Team member',
+        created_at: meeting.created_at,
+        updated_at: meeting.updated_at,
+      });
+    }
   };
 
   const filteredMeetings = meetings.filter((m) => {
@@ -305,6 +337,46 @@ export const MeetingsView: React.FC = () => {
                   </div>
                 )}
 
+                {/* Attached Files & Documents - Prominently visible on card face */}
+                {meeting.attachment_urls && meeting.attachment_urls.length > 0 && (
+                  <div className="mt-3 pt-2.5 border-t border-stone-100 flex flex-wrap items-center gap-2">
+                    <span className="text-[10px] font-bold text-stone-500 uppercase tracking-wider flex items-center gap-1 shrink-0">
+                      <Paperclip className="w-3 h-3 text-emerald-800" />
+                      <span>{meeting.attachment_urls.length} attached:</span>
+                    </span>
+                    {meeting.attachment_urls.map((att, i) => (
+                      <div
+                        key={i}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-950 border border-emerald-200/80 text-xs font-medium shadow-2xs hover:bg-emerald-100 transition"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-emerald-800 shrink-0" />
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenAttachment(att, meeting);
+                          }}
+                          className="hover:underline truncate max-w-[170px] text-left cursor-pointer"
+                          title={`Click to preview ${att.name}`}
+                        >
+                          {att.name}
+                        </button>
+                        <a
+                          href={att.url}
+                          download={att.name}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="p-0.5 text-emerald-700 hover:text-emerald-950 hover:bg-emerald-200/60 rounded transition cursor-pointer"
+                          title="Download or open file"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {/* Footer Row matching image_5523de88.png */}
                 <div className="mt-4 pt-3 border-t border-stone-100 flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
@@ -444,47 +516,32 @@ export const MeetingsView: React.FC = () => {
                           Attached Files & Linked Docs ({meeting.attachment_urls.length})
                         </h4>
                         <div className="flex flex-wrap gap-2">
-                          {meeting.attachment_urls.map((att, i) => {
-                            const handleOpenAttachment = () => {
-                              const matchingDoc = documents.find(
-                                (d) =>
-                                  d.id === (att as any).document_id ||
-                                  d.title.toLowerCase() === att.name.toLowerCase() ||
-                                  d.file_url === att.url
-                              );
-                              if (matchingDoc) {
-                                setPreviewDoc(matchingDoc);
-                              } else {
-                                setPreviewDoc({
-                                  id: (att as any).document_id || `att-${meeting.id}-${i}`,
-                                  title: att.name,
-                                  file_name: att.name,
-                                  file_url: att.url,
-                                  file_size: att.size,
-                                  category: 'Plant Lipids data',
-                                  tags: ['Meeting Attachment'],
-                                  is_external_link: false,
-                                  uploaded_by: meeting.created_by,
-                                  uploaded_by_name: meeting.created_by_name || 'Team member',
-                                  created_at: meeting.created_at,
-                                  updated_at: meeting.updated_at,
-                                });
-                              }
-                            };
-
-                            return (
+                          {meeting.attachment_urls.map((att, i) => (
+                            <div
+                              key={i}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-100 hover:bg-emerald-50 text-stone-800 border border-stone-200 text-xs transition"
+                            >
+                              <Paperclip className="w-3.5 h-3.5 text-stone-400" />
                               <button
-                                key={i}
                                 type="button"
-                                onClick={handleOpenAttachment}
-                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-100 hover:bg-emerald-50 hover:text-emerald-900 border border-stone-200 text-stone-700 text-xs transition cursor-pointer"
-                                title="Click to preview attachment"
+                                onClick={() => handleOpenAttachment(att, meeting)}
+                                className="hover:underline hover:text-emerald-900 font-medium cursor-pointer"
+                                title="Click to preview file"
                               >
-                                <Paperclip className="w-3.5 h-3.5 text-stone-400 group-hover:text-emerald-700" />
-                                <span>{att.name}</span>
+                                {att.name}
                               </button>
-                            );
-                          })}
+                              <a
+                                href={att.url}
+                                download={att.name}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="p-0.5 text-stone-400 hover:text-emerald-800 transition"
+                                title="Download file"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                              </a>
+                            </div>
+                          ))}
                         </div>
                       </div>
                     )}
